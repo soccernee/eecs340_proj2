@@ -46,32 +46,52 @@ int main(int argc, char *argv[])
 
   while (MinetGetNextEvent(event)==0) {
     // if we received an unexpected type of event, print error
-    if (event.eventtype!=MinetEvent::Dataflow 
+    if (event.eventtype!=MinetEvent::Dataflow
 	|| event.direction!=MinetEvent::IN) {
       MinetSendToMonitor(MinetMonitoringEvent("Unknown event ignored."));
     // if we received a valid event from Minet, do processing
     } else {
       //  Data from the IP layer below  //
       if (event.handle==mux) {
-	Packet p;
-	MinetReceive(mux,p);
-	unsigned tcphlen=TCPHeader::EstimateTCPHeaderLength(p);
-	cerr << "estimated header len="<<tcphlen<<"\n";
-	p.ExtractHeaderFromPayload<TCPHeader>(tcphlen);
-	IPHeader ipl=p.FindHeader(Headers::IPHeader);
-	TCPHeader tcph=p.FindHeader(Headers::TCPHeader);
+        Packet p;
+        MinetReceive(mux,p);
+        unsigned tcphlen=TCPHeader::EstimateTCPHeaderLength(p);
+        cerr << "estimated header len="<<tcphlen<<"\n";
+        p.ExtractHeaderFromPayload<TCPHeader>(tcphlen);
+        IPHeader ipl=p.FindHeader(Headers::IPHeader);
+        TCPHeader tcph=p.FindHeader(Headers::TCPHeader);
 
-	cerr << "TCP Packet: IP Header is "<<ipl<<" and ";
-	cerr << "TCP Header is "<<tcph << " and ";
+        cerr << "TCP Packet: IP Header is "<<ipl<<" and ";
+        cerr << "TCP Header is "<<tcph << " and ";
 
-	cerr << "Checksum is " << (tcph.IsCorrectChecksum(p) ? "VALID" : "INVALID");
-	
-      }
+        cerr  << "Checksum is " << (tcph.IsCorrectChecksum(p) ? "VALID" : "INVALID");
+
+        Connection c;
+        ipl.GetDestIP(c.src);
+        ipl.GetSourceIP(c.dest);
+        ipl.GetProtocol(c.protocol);
+        tcph.GetDestPort(c.srcport);
+        tcph.GetSourcePort(c.destport);
+
+        cerr << "Incoming packet. Return packet should contain:\n";
+        cerr << "Dest IP is " << c.src << "\n";
+        cerr << "Source IP is " << c.dest << "\n";
+
+        //if connection state = LISTEN (1)
+        //if (connectionState == 1) {
+
+         //   if (is_SYN(tcph)) {
+         //       TCPHeader tcpsend;
+
+          //  }
+        //}
+
+        }
       //  Data from the Sockets layer above  //
       if (event.handle==sock) {
-	SockRequestResponse s;
-	MinetReceive(sock,s);
-	cerr << "Received Socket Request:" << s << endl;
+        SockRequestResponse s;
+        MinetReceive(sock,s);
+        cerr << "Received Socket Request:" << s << endl;
       }
     }
   }
