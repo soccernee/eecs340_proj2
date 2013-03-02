@@ -28,7 +28,7 @@ done
 IFS=
 
 source ./minet.cfg.export
-##rm -f minet.cfg.export
+rm -f minet.cfg.export
 
 #export MINET_ETHERNETDEVICE="br0"
 #export MINET_IPADDR="10.10.145.5"
