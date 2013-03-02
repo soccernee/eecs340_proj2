@@ -23,6 +23,8 @@ using std::string;
 
 int main(int argc, char *argv[])
 {
+  cerr << "howdy, mate\n";
+
   MinetHandle mux, sock;
 
   MinetInit(MINET_TCP_MODULE);
@@ -40,19 +42,26 @@ int main(int argc, char *argv[])
     return -1;
   }
 
+  cerr << "tcp_module handling TCP traffic.....\n";
+
   MinetSendToMonitor(MinetMonitoringEvent("tcp_module handling TCP traffic"));
 
   MinetEvent event;
+  cerr << "other side of MinetMonitoringEvent\n";
 
   while (MinetGetNextEvent(event)==0) {
+    cerr << "Minet Event.\n";
     // if we received an unexpected type of event, print error
     if (event.eventtype!=MinetEvent::Dataflow
 	|| event.direction!=MinetEvent::IN) {
+      cerr << "Unknown event ignored.\n";
       MinetSendToMonitor(MinetMonitoringEvent("Unknown event ignored."));
     // if we received a valid event from Minet, do processing
     } else {
+       cerr << "Known event not ignored.\n";
       //  Data from the IP layer below  //
       if (event.handle==mux) {
+        cerr << "Request Received.\n";
         Packet p;
         MinetReceive(mux,p);
         unsigned tcphlen=TCPHeader::EstimateTCPHeaderLength(p);
@@ -73,9 +82,9 @@ int main(int argc, char *argv[])
         tcph.GetDestPort(c.srcport);
         tcph.GetSourcePort(c.destport);
 
-        cerr << "Incoming packet. Return packet should contain:\n";
-        cerr << "Dest IP is " << c.src << "\n";
-        cerr << "Source IP is " << c.dest << "\n";
+        cerr << "\n\nIncoming packet. Return packet should contain:\n";
+        cerr << "Source IP is " << c.src << "\n";
+        cerr << "Dest IP is " << c.dest << "\n";
 
         //if connection state = LISTEN (1)
         //if (connectionState == 1) {
@@ -86,6 +95,21 @@ int main(int argc, char *argv[])
           //  }
         //}
 
+        Packet pssend;
+        IPHeader ipsend;
+        ipsend.SetProtocol(IP_PROTO_TCP);
+        ipsend.SetSourceIP(c.src);
+        ipsend.SetDestIP(c.dest);
+        ipsend.SetTotalLength(TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH);
+        p.PushFrontHeader(ipsend);
+
+        TCPHeader tcpsend;
+        tcpsend.SetSourcePort(c.srcport,p);
+        tcpsend.SetDestPort(c.destport,p);
+        tcpsend.SetHeaderLen(TCP_HEADER_BASE_LENGTH,p);
+        p.PushBackHeader(tcpsend);
+        MinetSend(mux,p);
+
         }
       //  Data from the Sockets layer above  //
       if (event.handle==sock) {
@@ -95,5 +119,7 @@ int main(int argc, char *argv[])
       }
     }
   }
+  cerr << "beind while loop\n";
+  MinetDeinit();
   return 0;
 }
