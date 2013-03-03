@@ -43,30 +43,38 @@ int main(int argc, char *argv[]) {
     return -1;
     }
 
+    cerr << "tcp_module handling TCP traffic.\n";
+
     MinetSendToMonitor(MinetMonitoringEvent("tcp_module handling TCP traffic"));
 
     MinetEvent event;
     ConnectionList<TCPState> connectionList;
     double minimumTimeout = 100000;
-    Time timeElapsed(0);
+    Time timeElapsed;
     gettimeofday(&timeElapsed, NULL);
 
     while (MinetGetNextEvent(event, minimumTimeout)==0) {
         // if we received an unexpected type of event, print error
-
-        if (event.eventtype!=MinetEvent::Dataflow || event.direction!=MinetEvent::IN) {
-            MinetSendToMonitor(MinetMonitoringEvent("Unknown event ignored."));
-            // if we received a valid event from Minet, do processing
-        } else if (event.eventtype==MinetEvent::Timeout) {
+        cerr << "event\n";
+        if (event.eventtype==MinetEvent::Timeout) {
+            cerr << "timeout\n";
             cerr << "Timeout after" << timeElapsed << " seconds\n";
             //timeout occured
             // find the timeouted connection
-            ConnectionList<TCPState>::iterator timeoutConnectionIterator = connectionList.FindEarliest();
+            if (connectionList.FindEarliest()!=connectionList.end()) {
+                ConnectionList<TCPState>::iterator timeoutConnectionIterator = connectionList.FindEarliest();
+            }
             //resend last packet(s)
 
         }
+        cerr << "second if statement.\n";
+        if (event.eventtype!=MinetEvent::Dataflow || event.direction!=MinetEvent::IN) {
+            MinetSendToMonitor(MinetMonitoringEvent("Unknown event ignored."));
+            // if we received a valid event from Minet, do processing
+        }
          else {   //  Data from the IP layer below  //
             if (event.handle==mux) {
+                cerr << "mux!\n";
                 Packet p;
                 MinetReceive(mux,p);
                 unsigned tcphlen=TCPHeader::EstimateTCPHeaderLength(p);
@@ -92,6 +100,51 @@ int main(int argc, char *argv[]) {
                 ConnectionList<TCPState>::iterator matchingConnection = connectionList.FindMatching(c);
                 if(matchingConnection == connectionList.end()) {
                     cerr << "Received packet from a connection not in the list" << endl;
+                    //code for testing
+/*
+                      unsigned int remoteSequenceNumber;
+                    unsigned int remoteAckNumber;
+                     ConnectionToStateMapping<TCPState> mapping = *matchingConnection;
+
+                    tcpHeader.GetSeqNum(remoteSequenceNumber);
+                    tcpHeader.GetAckNum(remoteAckNumber);
+                        Packet synAckPacketToSend;
+                        IPHeader ipHeader;
+                        ipHeader.SetProtocol(IP_PROTO_TCP);
+                        ipHeader.SetSourceIP(c.src);
+                        ipHeader.SetDestIP(c.dest);
+                        ipHeader.SetTotalLength(TCP_HEADER_BASE_LENGTH+IP_HEADER_BASE_LENGTH);
+                        synAckPacketToSend.PushFrontHeader(ipHeader);
+
+                        TCPHeader tcpHeader;
+                        tcpHeader.SetSourcePort(c.srcport, synAckPacketToSend);
+                        tcpHeader.SetDestPort(c.destport, synAckPacketToSend);
+                        tcpHeader.SetSeqNum(mapping.state.last_acked, synAckPacketToSend);
+                        tcpHeader.SetAckNum(remoteSequenceNumber + 1, synAckPacketToSend);
+                        tcpHeader.SetHeaderLen(TCP_HEADER_BASE_LENGTH / 4, synAckPacketToSend);
+                        unsigned char flags;
+                        SET_ACK(flags);
+                        SET_SYN(flags);
+                        tcpHeader.SetFlags(flags, synAckPacketToSend);
+                        tcpHeader.SetWinSize(0, synAckPacketToSend);
+                        tcpHeader.SetChecksum(0);
+                        tcpHeader.SetUrgentPtr(0, synAckPacketToSend);
+                        tcpHeader.RecomputeChecksum(synAckPacketToSend);
+                        synAckPacketToSend.PushBackHeader(tcpHeader);
+
+                        cerr << endl << "Sending response: " << endl;
+                        cerr << "Is checksum correct?" << tcpHeader.IsCorrectChecksum(synAckPacketToSend) << endl;
+                        IPHeader foundIPHeader=synAckPacketToSend.FindHeader(Headers::IPHeader);
+                        cerr << foundIPHeader << endl;
+                        TCPHeader foundTCPHeader=synAckPacketToSend.FindHeader(Headers::TCPHeader);
+                        cerr << foundTCPHeader << endl;
+
+                        MinetSend(mux, synAckPacketToSend);
+
+
+*/
+                //end of code for testing
+
 
 
                 } else {
@@ -240,6 +293,7 @@ int main(int argc, char *argv[]) {
             }
             }
         }
+            cerr << "down under\n";
             //find how much time has elapsed since the last clocking event
            Time timeSinceLastClock;
            gettimeofday(&timeSinceLastClock, NULL);
