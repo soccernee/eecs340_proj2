@@ -59,36 +59,79 @@ int main(int argc, char *argv[]) {
                 unsigned tcphlen=TCPHeader::EstimateTCPHeaderLength(p);
                 cerr << "estimated header len="<<tcphlen<<"\n";
                 p.ExtractHeaderFromPayload<TCPHeader>(tcphlen);
-                IPHeader ipl=p.FindHeader(Headers::IPHeader);
-                TCPHeader tcph=p.FindHeader(Headers::TCPHeader);
+                IPHeader ipHeader=p.FindHeader(Headers::IPHeader);
+                TCPHeader tcpHeader=p.FindHeader(Headers::TCPHeader);
+                cerr << "Received packet: " << endl;
+                cerr << ipHeader<< endl;
+                cerr << tcpHeader << endl;
 
-                cerr << "TCP Packet: IP Header is "<<ipl<<" and ";
-                cerr << "TCP Header is "<<tcph << " and ";
+                cerr  << "Checksum is " << (tcpHeader.IsCorrectChecksum(p) ? "VALID" : "INVALID") << "\n";
 
-                cerr  << "Checksum is " << (tcph.IsCorrectChecksum(p) ? "VALID" : "INVALID") << "\n";
-
-                cerr << "\nReceived TCP Packet\n";
                 Connection c;
-                ipl.GetDestIP(c.src);
-                ipl.GetSourceIP(c.dest);
-                ipl.GetProtocol(c.protocol);
-                tcph.GetDestPort(c.srcport);
-                tcph.GetSourcePort(c.destport);
+                ipHeader.GetDestIP(c.src);
+                ipHeader.GetSourceIP(c.dest);
+                ipHeader.GetProtocol(c.protocol);
+                tcpHeader.GetDestPort(c.srcport);
+                tcpHeader.GetSourcePort(c.destport);
                 cerr << "Received from " << c.dest << ":" << c.destport << "\n";
                 cerr << "Sent to " << c.src << ":" << c.srcport << "\n";
 
                 ConnectionList<TCPState>::iterator matchingConnection = connectionList.FindMatching(c);
                 if(matchingConnection == connectionList.end()) {
-                    cerr << "Current connection state: CLOSED\n";
-                    cerr << "This is a new connection\n";
-                    TCPState state(666, CLOSED, 5);
-                    Time time(1.0);
-                    bool timerActive = false;
-                    ConnectionToStateMapping<TCPState> mapping(c, time, state, timerActive);
-                    connectionList.push_back(mapping);
+                    cerr << "Received packet from a connection not in the list" << endl;
+
+
                 } else {
                     ConnectionToStateMapping<TCPState> mapping = *matchingConnection;
                     cerr << "Current connection state: " << mapping.state << "\n";
+
+                    unsigned char flags;
+                    tcpHeader.GetFlags(flags);
+
+                    unsigned int remoteSequenceNumber;
+                    unsigned int remoteAckNumber;
+
+                    tcpHeader.GetSeqNum(remoteSequenceNumber);
+                    tcpHeader.GetAckNum(remoteAckNumber);
+
+
+                    if(IS_SYN(flags)) {
+                        cerr << "SYN Received, remote ISN is " << remoteSequenceNumber << endl;
+                        Packet synAckPacketToSend;
+                        IPHeader ipHeader;
+                        ipHeader.SetProtocol(IP_PROTO_TCP);
+                        ipHeader.SetSourceIP(c.src);
+                        ipHeader.SetDestIP(c.dest);
+                        ipHeader.SetTotalLength(TCP_HEADER_BASE_LENGTH+IP_HEADER_BASE_LENGTH);
+                        synAckPacketToSend.PushFrontHeader(ipHeader);
+
+                        TCPHeader tcpHeader;
+                        tcpHeader.SetSourcePort(c.srcport, synAckPacketToSend);
+                        tcpHeader.SetDestPort(c.destport, synAckPacketToSend);
+                        tcpHeader.SetSeqNum(mapping.state.last_acked, synAckPacketToSend);
+                        tcpHeader.SetAckNum(remoteSequenceNumber + 1, synAckPacketToSend);
+                        tcpHeader.SetHeaderLen(TCP_HEADER_BASE_LENGTH / 4, synAckPacketToSend);
+                        unsigned char flags;
+                        SET_ACK(flags);
+                        SET_SYN(flags);
+                        tcpHeader.SetFlags(flags, synAckPacketToSend);
+                        tcpHeader.SetWinSize(0, synAckPacketToSend);
+                        tcpHeader.SetChecksum(0);
+                        tcpHeader.SetUrgentPtr(0, synAckPacketToSend);
+                        tcpHeader.RecomputeChecksum(synAckPacketToSend);
+                        synAckPacketToSend.PushBackHeader(tcpHeader);
+
+                        cerr << endl << "Sending response: " << endl;
+                        cerr << "Is checksum correct?" << tcpHeader.IsCorrectChecksum(synAckPacketToSend) << endl;
+                        IPHeader foundIPHeader=synAckPacketToSend.FindHeader(Headers::IPHeader);
+                        cerr << foundIPHeader << endl;
+                        TCPHeader foundTCPHeader=synAckPacketToSend.FindHeader(Headers::TCPHeader);
+                        cerr << foundTCPHeader << endl;
+
+                        MinetSend(mux, synAckPacketToSend);
+
+                    }
+
                 }
 
 
@@ -109,11 +152,12 @@ int main(int argc, char *argv[]) {
             cerr << "Received Socket Request:" << s << endl;
             switch (s.type) {
                 case CONNECT:
+                {
                     cerr << "SockRequestResponse Connect.\n";
-                    TCPState state(0,0,0);
-                    Time time(1.0);
-                    ConnectionToStateMapping<TCPState> mapping(s.connection, time, state, false);
-                    connectionList.push_back(mapping);
+                    TCPState statesend(0,0,0);
+                    Time timesend(1.0);
+                    ConnectionToStateMapping<TCPState> mappingsend(s.connection, timesend, statesend, false);
+                    connectionList.push_back(mappingsend);
 
                     Packet psend;
                     IPHeader ipsend;
@@ -121,27 +165,49 @@ int main(int argc, char *argv[]) {
                     ipsend.SetSourceIP(s.connection.src);
                     ipsend.SetDestIP(s.connection.dest);
                     ipsend.SetTotalLength(TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH);
-                    p.PushFrontHeaer(ipsend);
+                    psend.PushFrontHeader(ipsend);
 
                     TCPHeader tcpsend;
-                    tcpsend.SetSourcePort(s.connection.srcport, p);
-                    tcpsend.SetDestPort(s.connection.destport, p);
-                    int *seqnum = 0;
-                    tcpsend.SetSeqNum(seqnum,p);
-                    tcpsend.SetWinSize(seqnum,p);
-                    SET_ACK(tcpsend);
-                    tcpsend.SetChecksum(tcpsend.ComputeChecksum(p));
+                    tcpsend.SetSourcePort(s.connection.srcport, psend);
+                    tcpsend.SetDestPort(s.connection.destport, psend);
+                    unsigned char sendflags;
+                    SET_SYN(sendflags);
+                    tcpsend.SetSeqNum(0,psend);
+                    tcpsend.SetWinSize(0,psend);
+                    tcpsend.SetFlags(sendflags, psend);
+                    tcpsend.SetChecksum(tcpsend.ComputeChecksum(psend));
                     cerr << "Outgoing TCP Header is " << tcpsend << "\n";
-                    p.PushBackHeader(tcpsend);
-
-
-                    MinetSend(mux,p);
-
+                    psend.PushBackHeader(tcpsend);
+                    MinetSend(mux,psend);
+                }
                     break;
+
                 case ACCEPT:
-                    cerr << "SockRequestResponse Accept.\n";
+                {
 
 
+                    cerr << "Socket requests to listen on port " << s.connection.srcport << endl;
+                            ConnectionList<TCPState>::iterator matchingConnection = connectionList.FindMatchingSource(s.connection);
+                            if(matchingConnection == connectionList.end()) {
+                                int isn = 666;
+                                TCPState state(isn, LISTEN, 5);
+                                Time time(0.0);
+                                bool timerActive = false;
+                                ConnectionToStateMapping<TCPState> mapping(s.connection, time, state, timerActive);
+                                connectionList.push_back(mapping);
+                                cerr << "Adding new connection to connection list";
+    /*
+                                SockRequestResponse replyToSocket;
+                                replyToSocket.type = STATUS;
+                                replyToSocket.connection = s.connection;
+                                replyToSocket.bytes = 0;
+                                replyToSocket.error = EOK;*/
+
+                            } else {
+                                cerr << "Connection already exists in connection list" << endl;
+                            }
+
+                    }
 
                     break;
                 case STATUS:
@@ -154,8 +220,6 @@ int main(int argc, char *argv[]) {
                     cerr << "SockRequestResponse Unknown\n";
 
             }
-
-
             }
         }
     }
