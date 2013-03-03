@@ -23,6 +23,8 @@ using std::endl;
 using std::cerr;
 using std::string;
 
+Time subtractTime(Time x, Time y);
+
 int main(int argc, char *argv[]) {
     MinetHandle mux, sock;
 
@@ -45,14 +47,25 @@ int main(int argc, char *argv[]) {
 
     MinetEvent event;
     ConnectionList<TCPState> connectionList;
+    double minimumTimeout = 100000;
+    Time timeElapsed(0);
+    gettimeofday(&timeElapsed, NULL);
 
-    while (MinetGetNextEvent(event)==0) {
+    while (MinetGetNextEvent(event, minimumTimeout)==0) {
         // if we received an unexpected type of event, print error
+
         if (event.eventtype!=MinetEvent::Dataflow || event.direction!=MinetEvent::IN) {
             MinetSendToMonitor(MinetMonitoringEvent("Unknown event ignored."));
             // if we received a valid event from Minet, do processing
-        } else {
-            //  Data from the IP layer below  //
+        } else if (event.eventtype==MinetEvent::Timeout) {
+            cerr << "Timeout after" << timeElapsed << " seconds\n";
+            //timeout occured
+            // find the timeouted connection
+            ConnectionList<TCPState>::iterator timeoutConnectionIterator = connectionList.FindEarliest();
+            //resend last packet(s)
+
+        }
+         else {   //  Data from the IP layer below  //
             if (event.handle==mux) {
                 Packet p;
                 MinetReceive(mux,p);
@@ -134,15 +147,6 @@ int main(int argc, char *argv[]) {
 
                 }
 
-
-                //if connection state = LISTEN (1)
-                //if (connectionState == 1) {
-
-                //   if (is_SYN(tcph)) {
-                //       TCPHeader tcpsend;
-
-                //  }
-                //}
                 cerr << "\n\n\n";
             }
             //  Data from the Sockets layer above  //
@@ -179,6 +183,13 @@ int main(int argc, char *argv[]) {
                     cerr << "Outgoing TCP Header is " << tcpsend << "\n";
                     psend.PushBackHeader(tcpsend);
                     MinetSend(mux,psend);
+
+                    SockRequestResponse replyToSocket;
+                    replyToSocket.type=STATUS;
+                    replyToSocket.connection = s.connection;
+                    replyToSocket.bytes =  0;
+                    replyToSocket.error = EOK;
+                    MinetSend(sock,replyToSocket);
                 }
                     break;
 
@@ -196,12 +207,12 @@ int main(int argc, char *argv[]) {
                                 ConnectionToStateMapping<TCPState> mapping(s.connection, time, state, timerActive);
                                 connectionList.push_back(mapping);
                                 cerr << "Adding new connection to connection list";
-    /*
+
                                 SockRequestResponse replyToSocket;
                                 replyToSocket.type = STATUS;
                                 replyToSocket.connection = s.connection;
                                 replyToSocket.bytes = 0;
-                                replyToSocket.error = EOK;*/
+                                replyToSocket.error = EOK;
 
                             } else {
                                 cerr << "Connection already exists in connection list" << endl;
@@ -215,6 +226,13 @@ int main(int argc, char *argv[]) {
                     break;
                 case WRITE:
                     cerr << "SockRequestResponse Status.\n";
+
+
+
+
+
+
+
                     break;
                 default:
                     cerr << "SockRequestResponse Unknown\n";
@@ -222,6 +240,57 @@ int main(int argc, char *argv[]) {
             }
             }
         }
+            //find how much time has elapsed since the last clocking event
+           Time timeSinceLastClock;
+           gettimeofday(&timeSinceLastClock, NULL);
+           timeElapsed = subtractTime(timeSinceLastClock, timeElapsed);
+           cerr << "Time elapsed = " << timeElapsed << "\n";
+
+            //after every event or timeout, update the timeout for each connection
+           ConnectionList<TCPState>::iterator connectionListIterator = connectionList.begin();
+            for (; connectionListIterator!=connectionList.end(); connectionListIterator++) {
+                ConnectionToStateMapping<TCPState> updateConnectionToStateMapping = *connectionListIterator;
+                if (updateConnectionToStateMapping.bTmrActive == true) {
+                    updateConnectionToStateMapping.timeout = subtractTime(updateConnectionToStateMapping.timeout, timeElapsed);
+                }
+            }
+
+            //find the new smallest Timeout
+            ConnectionList<TCPState>::iterator earliestTimeout = connectionList.FindEarliest();
+            if (earliestTimeout!=connectionList.end()) {
+                minimumTimeout = earliestTimeout->timeout.tv_sec + (earliestTimeout->timeout.tv_usec/1000000.0);
+            }
+            else {
+                minimumTimeout = 100000;
+            }
+            cerr << "new smallest Timeout = " << minimumTimeout << "\n";
+
+            gettimeofday(&timeElapsed, NULL);
+
     }
     return 0;
 }
+
+
+
+Time subtractTime(Time x, Time y) {
+           /* Perform the carry for the later subtraction by updating y. */
+       if (x.tv_usec < y.tv_usec) {
+         int nsec = (y.tv_usec - x.tv_usec) / 1000000.0 + 1;
+         y.tv_usec -= 1000000.0 * nsec;
+         y.tv_sec += nsec;
+       }
+       if (x.tv_usec - y.tv_usec > 1000000.0) {
+         int nsec = (x.tv_usec - y.tv_usec) / 1000000.0;
+         y.tv_usec += 1000000.0 * nsec;
+         y.tv_sec -= nsec;
+       }
+       Time resultTime;
+       resultTime.tv_sec = x.tv_sec - y.tv_sec;
+       resultTime.tv_usec = x.tv_usec - y.tv_usec;
+
+       return resultTime;
+}
+
+
+
