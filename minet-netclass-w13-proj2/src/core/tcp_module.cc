@@ -198,18 +198,45 @@ int main(int argc, char *argv[]) {
             }
             //  Data from the Sockets layer above  //
             if (event.handle==sock) {
+
                 SockRequestResponse s;
                 MinetReceive(sock,s);
                 cerr << "Received Socket Request:" << s << endl;
-                switch(s.type) {
+                switch (s.type) {
                     case CONNECT:
-                        {
-                            //ACTIVE OPEN
-                        }
+                    {
+                        cerr << "SockRequestResponse Connect.\n";
+                        TCPState statesend(0,0,0);
+                        Time timesend(1.0);
+                        ConnectionToStateMapping<TCPState> mappingsend(s.connection, timesend, statesend, false);
+                        connectionList.push_back(mappingsend);
+
+                        Packet psend;
+                        IPHeader ipsend;
+                        ipsend.SetProtocol(IP_PROTO_TCP);
+                        ipsend.SetSourceIP(s.connection.src);
+                        ipsend.SetDestIP(s.connection.dest);
+                        ipsend.SetTotalLength(TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH);
+                        psend.PushFrontHeader(ipsend);
+
+                        TCPHeader tcpsend;
+                        tcpsend.SetSourcePort(s.connection.srcport, psend);
+                        tcpsend.SetDestPort(s.connection.destport, psend);
+                        unsigned char sendflags;
+                        SET_SYN(sendflags);
+                        tcpsend.SetSeqNum(0,psend);
+                        tcpsend.SetWinSize(0,psend);
+                        tcpsend.SetFlags(sendflags, psend);
+                        tcpsend.SetChecksum(tcpsend.ComputeChecksum(psend));
+                        cerr << "Outgoing TCP Header is " << tcpsend << "\n";
+                        psend.PushBackHeader(tcpsend);
+                        MinetSend(mux,psend);
+                    }
                         break;
+
                     case ACCEPT:
-                        {
-                            cerr << "Socket requests to listen on port " << s.connection.srcport << endl;
+                    {
+                        cerr << "Socket requests to listen on port " << s.connection.srcport << endl;
                             ConnectionList<TCPState>::iterator matchingConnection = connectionList.FindMatchingSource(s.connection);
                             if(matchingConnection == connectionList.end()) {
                                 int isn = 666;
@@ -272,8 +299,6 @@ int main(int argc, char *argv[]) {
                         }
                         break;
                 }
-                //Get destination
-                //If destination is not in the connection list, add it to the connection list
             }
         }
     }

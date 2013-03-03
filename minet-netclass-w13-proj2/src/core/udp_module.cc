@@ -55,8 +55,10 @@ int main(int argc, char *argv[])
   MinetSendToMonitor(MinetMonitoringEvent("udp_module handling udp traffic........"));
 
   MinetEvent event;
+  cerr << "Behind MinetMonitoringEvent.\n";
 
   while (MinetGetNextEvent(event)==0) {
+    cerr << "inside while loop\n";
     if (event.eventtype!=MinetEvent::Dataflow
 	|| event.direction!=MinetEvent::IN) {
       MinetSendToMonitor(MinetMonitoringEvent("Unknown event ignored."));
@@ -203,5 +205,6 @@ int main(int argc, char *argv[])
       }
     }
   }
+  cerr << "Beind While loop\n";
   return 0;
 }
