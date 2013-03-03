@@ -107,6 +107,55 @@ int main(int argc, char *argv[]) {
             SockRequestResponse s;
             MinetReceive(sock,s);
             cerr << "Received Socket Request:" << s << endl;
+            switch (s.type) {
+                case CONNECT:
+                    cerr << "SockRequestResponse Connect.\n";
+                    TCPState state(0,0,0);
+                    Time time(1.0);
+                    ConnectionToStateMapping<TCPState> mapping(s.connection, time, state, false);
+                    connectionList.push_back(mapping);
+
+                    Packet psend;
+                    IPHeader ipsend;
+                    ipsend.SetProtocol(IP_PROTO_TCP);
+                    ipsend.SetSourceIP(s.connection.src);
+                    ipsend.SetDestIP(s.connection.dest);
+                    ipsend.SetTotalLength(TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH);
+                    p.PushFrontHeaer(ipsend);
+
+                    TCPHeader tcpsend;
+                    tcpsend.SetSourcePort(s.connection.srcport, p);
+                    tcpsend.SetDestPort(s.connection.destport, p);
+                    int *seqnum = 0;
+                    tcpsend.SetSeqNum(seqnum,p);
+                    tcpsend.SetWinSize(seqnum,p);
+                    SET_ACK(tcpsend);
+                    tcpsend.SetChecksum(tcpsend.ComputeChecksum(p));
+                    cerr << "Outgoing TCP Header is " << tcpsend << "\n";
+                    p.PushBackHeader(tcpsend);
+
+
+                    MinetSend(mux,p);
+
+                    break;
+                case ACCEPT:
+                    cerr << "SockRequestResponse Accept.\n";
+
+
+
+                    break;
+                case STATUS:
+                    cerr << "SockRequestResponse Status.\n";
+                    break;
+                case WRITE:
+                    cerr << "SockRequestResponse Status.\n";
+                    break;
+                default:
+                    cerr << "SockRequestResponse Unknown\n";
+
+            }
+
+
             }
         }
     }
