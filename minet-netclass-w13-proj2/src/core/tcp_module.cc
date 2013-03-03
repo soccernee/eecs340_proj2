@@ -355,16 +355,6 @@ int main(int argc, char *argv[]) {
                 case STATUS:
                     cerr << "SockRequestResponse Status.\n";
                     break;
-                case WRITE:
-                    cerr << "SockRequestResponse Status.\n";
-
-
-
-
-
-
-
-                    break;
                 default:
                     cerr << "SockRequestResponse Unknown\n";
 
@@ -373,7 +363,7 @@ int main(int argc, char *argv[]) {
                         break;
                 }
             }
-        }
+
             cerr << "down under\n";
             //find how much time has elapsed since the last clocking event
            Time timeSinceLastClock;
