@@ -70,9 +70,6 @@ int main(int argc, char *argv[])
 	cerr << "Local Response: "<<r<<"\n";
 	MinetSend(ip,r);
 	if (r.flag==ARPRequestResponse::RESPONSE_UNKNOWN) {
-	  cerr << "So sad, unknown\n";
-
-	  // cache.Update(ARPRequestResponse(,r.ipaddr, ARPRequestResponse::RESPONSE_OK));
 
 	  ARPPacket request(ARPPacket::Request,
 			    ethernetaddr,
