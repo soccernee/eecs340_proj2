@@ -32,6 +32,8 @@ void sendAckNoData(Connection c, unsigned int sequenceNumber, unsigned ackNumber
 
 void receiveData(ConnectionToStateMapping<TCPState> & mapping, IPHeader & ipHeader, TCPHeader & tcpHeader, Buffer & payload);
 
+void sendData (ConnectionToStateMapping<TCPState> &matchingConnection, SockRequestResponse sockRequest);
+
 void sendFin(ConnectionToStateMapping<TCPState> & mapping);
 
 static MinetHandle mux, sock;
@@ -61,7 +63,7 @@ int main(int argc, char *argv[]) {
 
     MinetEvent event;
     ConnectionList<TCPState> connectionList;
-    double minimumTimeout = 1.0;
+    double minimumTimeout = -1;
     Time timeElapsed;
     gettimeofday(&timeElapsed, NULL);
 
@@ -92,6 +94,7 @@ int main(int argc, char *argv[]) {
             if (event.handle==mux) {
                 cerr << "mux!\n";
                 MinetReceive(mux,p);
+                cerr << "no man ground\n";
                 tcphlen=TCPHeader::EstimateTCPHeaderLength(p);
                 cerr << "estimated header len="<<tcphlen<<"\n";
                 p.ExtractHeaderFromPayload<TCPHeader>(tcphlen);
@@ -115,53 +118,6 @@ int main(int argc, char *argv[]) {
                 ConnectionList<TCPState>::iterator mapping = connectionList.FindMatching(c);
                 if(mapping == connectionList.end()) {
                     cerr << "Received packet from a connection not in the list" << endl;
-                    //code for testing
-/*
-                      unsigned int remoteSequenceNumber;
-                    unsigned int remoteAckNumber;
-                     ConnectionToStateMapping<TCPState> mapping = *matchingConnection;
-
-                    tcpHeader.GetSeqNum(remoteSequenceNumber);
-                    tcpHeader.GetAckNum(remoteAckNumber);
-                        Packet synAckPacketToSend;
-                        IPHeader ipHeader;
-                        ipHeader.SetProtocol(IP_PROTO_TCP);
-                        ipHeader.SetSourceIP(c.src);
-                        ipHeader.SetDestIP(c.dest);
-                        ipHeader.SetTotalLength(TCP_HEADER_BASE_LENGTH+IP_HEADER_BASE_LENGTH);
-                        synAckPacketToSend.PushFrontHeader(ipHeader);
-
-                        TCPHeader tcpHeader;
-                        tcpHeader.SetSourcePort(c.srcport, synAckPacketToSend);
-                        tcpHeader.SetDestPort(c.destport, synAckPacketToSend);
-                        tcpHeader.SetSeqNum(mapping.state.last_acked, synAckPacketToSend);
-                        tcpHeader.SetAckNum(remoteSequenceNumber + 1, synAckPacketToSend);
-                        tcpHeader.SetHeaderLen(TCP_HEADER_BASE_LENGTH / 4, synAckPacketToSend);
-                        unsigned char flags;
-                        SET_ACK(flags);
-                        SET_SYN(flags);
-                        tcpHeader.SetFlags(flags, synAckPacketToSend);
-                        tcpHeader.SetWinSize(0, synAckPacketToSend);
-                        tcpHeader.SetChecksum(0);
-                        tcpHeader.SetUrgentPtr(0, synAckPacketToSend);
-                        tcpHeader.RecomputeChecksum(synAckPacketToSend);
-                        synAckPacketToSend.PushBackHeader(tcpHeader);
-
-                        cerr << endl << "Sending response: " << endl;
-                        cerr << "Is checksum correct?" << tcpHeader.IsCorrectChecksum(synAckPacketToSend) << endl;
-                        IPHeader foundIPHeader=synAckPacketToSend.FindHeader(Headers::IPHeader);
-                        cerr << foundIPHeader << endl;
-                        TCPHeader foundTCPHeader=synAckPacketToSend.FindHeader(Headers::TCPHeader);
-                        cerr << foundTCPHeader << endl;
-
-                        MinetSend(mux, synAckPacketToSend);
-
-
-*/
-                //end of code for testing
-
-
-
                 } else {
                     cerr << "Current connection state: " << mapping->state << "\n";
                     unsigned char flags;
@@ -271,6 +227,7 @@ int main(int argc, char *argv[]) {
             //  Data from the Sockets layer above  //
             if (event.handle==sock) {
 
+                cerr << "Sock Request\n";
                 SockRequestResponse s;
                 MinetReceive(sock,s);
                 cerr << "Received Socket Request:" << s << endl;
@@ -278,11 +235,19 @@ int main(int argc, char *argv[]) {
                     case CONNECT:
                     {
                         cerr << "SockRequestResponse Connect.\n";
+
+                        sendSynAck(s.connection, 0, 600);
+                        cerr << endl;
+                        sleep(2);
+                        sendSynAck(s.connection, 0, 600);
+                        cerr << endl;
+
                         TCPState statesend(0,0,0);
-                        Time timesend(1.0);
+                        Time timesend(2.0);
                         ConnectionToStateMapping<TCPState> mappingsend(s.connection, timesend, statesend, false);
                         connectionList.push_back(mappingsend);
 
+/*
                         Packet psend;
                         IPHeader ipsend;
                         ipsend.SetProtocol(IP_PROTO_TCP);
@@ -296,13 +261,14 @@ int main(int argc, char *argv[]) {
                         tcpsend.SetDestPort(s.connection.destport, psend);
                         unsigned char sendflags;
                         SET_SYN(sendflags);
-                        tcpsend.SetSeqNum(0,psend);
+                        tcpsend.SetSeqNum(600,psend);
                         tcpsend.SetWinSize(0,psend);
                         tcpsend.SetFlags(sendflags, psend);
                         tcpsend.SetChecksum(tcpsend.ComputeChecksum(psend));
                         cerr << "Outgoing TCP Header is " << tcpsend << "\n";
                         psend.PushBackHeader(tcpsend);
                         MinetSend(mux,psend);
+                        */
                     }
                         break;
 
@@ -342,61 +308,11 @@ int main(int argc, char *argv[]) {
                             // 4) upon acknowledgement send more packets
 
                          cerr << "Socket requests to write on port " << s.connection.srcport << "to port" << s.connection.destport << "to destination IP" <<s.connection.dest << endl;
+                         cerr << "Data it wishes to send: " << s.data << endl;
+
                             ConnectionList<TCPState>::iterator matchingConnection = connectionList.FindMatchingSource(s.connection);
                             if(matchingConnection != connectionList.end()) {
-
-                                    int localISN;
-                                    if (s.data.GetSize()==0) {
-                                        localISN = 0;
-                                    }
-                                    else {
-                                        localISN = matchingConnection->state.last_sent;
-                                    }
-
-                                    int remoteISN = matchingConnection->state.last_recvd;
-
-                                    //s.data.AddBack(matchingConnection->state.SendBuffer);
-                                    PacketQueue packetQueue;
-
-                                    matchingConnection->timeout = Time(1.0);
-                                    matchingConnection->bTmrActive = true;
-
-                                    for (int offset = 0; offset < (signed int)s.bytes; offset+= 236) {
-                                        Packet dataPacketToSend;
-                                        Connection c_data = matchingConnection->connection;
-                                        IPHeader ipHeader;
-                                        ipHeader.SetProtocol(IP_PROTO_TCP);
-                                        ipHeader.SetSourceIP(c_data.src);
-                                        ipHeader.SetDestIP(c_data.dest);
-                                        ipHeader.SetTotalLength(TCP_HEADER_BASE_LENGTH+IP_HEADER_BASE_LENGTH);
-                                        dataPacketToSend.PushFrontHeader(ipHeader);
-
-                                        TCPHeader tcpHeader;
-                                        tcpHeader.SetSourcePort(c_data.srcport, dataPacketToSend);
-                                        tcpHeader.SetDestPort(c_data.destport, dataPacketToSend);
-                                        tcpHeader.SetSeqNum(localISN, dataPacketToSend);
-                                        tcpHeader.SetAckNum(remoteISN + 1, dataPacketToSend);
-                                        tcpHeader.SetHeaderLen(TCP_HEADER_BASE_LENGTH / 4, dataPacketToSend);
-                                        tcpHeader.SetChecksum(0);
-                                        tcpHeader.SetUrgentPtr(0, dataPacketToSend);
-                                        tcpHeader.RecomputeChecksum(dataPacketToSend);
-                                        dataPacketToSend.PushBackHeader(tcpHeader);
-
-                                        if (s.bytes-offset < 236) {
-                                            //dataPacketToSend.payload.GetData(%s.data, (s.bytes-offset),offset);
-                                        }
-                                        else {
-                                        //dataPacketToSend.payload.GetData(&s.data,236,offset);
-                                        }
-                                        packetQueue.PushPacket(dataPacketToSend);
-
-                                        //generate packet p
-                                        //send p if we can
-                                        //otherwise add p to the queue
-                                        localISN += offset;
-                                    }
-
-
+                                sendData(*matchingConnection, s);
                             }
                             else {
                                 cerr << "Unable to find connection.\n";
@@ -462,7 +378,7 @@ int main(int argc, char *argv[]) {
                         break;
                 }
             }
-
+         }
             cerr << "down under\n";
             //find how much time has elapsed since the last clocking event
            Time timeSinceLastClock;
@@ -476,6 +392,7 @@ int main(int argc, char *argv[]) {
                 ConnectionToStateMapping<TCPState> updateConnectionToStateMapping = *connectionListIterator;
                 if (updateConnectionToStateMapping.bTmrActive == true) {
                     updateConnectionToStateMapping.timeout = subtractTime(updateConnectionToStateMapping.timeout, timeElapsed);
+                    cerr << updateConnectionToStateMapping << endl;
                 }
             }
 
@@ -485,12 +402,12 @@ int main(int argc, char *argv[]) {
                 minimumTimeout = earliestTimeout->timeout.tv_sec + (earliestTimeout->timeout.tv_usec/1000000.0);
             }
             else {
-                minimumTimeout = 100000;
+                minimumTimeout = -1;
             }
             cerr << "new smallest Timeout = " << minimumTimeout << "\n";
 
             gettimeofday(&timeElapsed, NULL);
-         }
+
     }
     return 0;
 }
@@ -575,7 +492,6 @@ void receiveData(ConnectionToStateMapping<TCPState> & mapping, IPHeader & ipHead
     tcpHeader.GetHeaderLen(tcpHeaderLength);
     unsigned int payloadSize = totalLength - ipHeaderLength * 4 - tcpHeaderLength * 4;
 
-
     mapping.state.last_acked = remoteAckNumber - 1;
 
     cerr << "Received ACK " << remoteAckNumber << endl;
@@ -617,6 +533,66 @@ void receiveData(ConnectionToStateMapping<TCPState> & mapping, IPHeader & ipHead
         //sendAckNoData(mapping.connection, mapping.state.last_sent + 1, mapping.state.last_recvd + 1);
         //Resend ack of last received + 1.  All the data we received is beyond what we are looking for
     }
+}
+
+void sendData (ConnectionToStateMapping<TCPState> & matchingConnection, SockRequestResponse sockRequest) {
+
+    int localISN = matchingConnection.state.last_acked;
+    int remoteISN = matchingConnection.state.last_recvd;
+    int receiveWindow = matchingConnection.state.rwnd;
+
+    cerr << "Matching Connection is " << matchingConnection << endl;
+    int offset = 0;
+    //for (int offset = 0; offset < (signed int)sockRequest.bytes && offset < receiveWindow; offset+= TCP_MAXIMUM_SEGMENT_SIZE) {
+
+        int sizeOfData = (sockRequest.bytes - offset);
+        if (sizeOfData > TCP_MAXIMUM_SEGMENT_SIZE) {
+            sizeOfData = TCP_MAXIMUM_SEGMENT_SIZE;
+        }
+        Packet dataPacketToSend(sockRequest.data.ExtractFront(sizeOfData));
+        Connection c_data = matchingConnection.connection;
+        IPHeader ipHeader;
+        ipHeader.SetProtocol(IP_PROTO_TCP);
+        ipHeader.SetSourceIP(c_data.src);
+        ipHeader.SetDestIP(c_data.dest);
+        ipHeader.SetTotalLength(sizeOfData + TCP_HEADER_BASE_LENGTH+IP_HEADER_BASE_LENGTH);
+        dataPacketToSend.PushFrontHeader(ipHeader);
+
+        TCPHeader tcpHeader;
+        tcpHeader.SetSourcePort(c_data.srcport, dataPacketToSend);
+        tcpHeader.SetDestPort(c_data.destport, dataPacketToSend);
+        tcpHeader.SetSeqNum(localISN, dataPacketToSend);
+        tcpHeader.SetAckNum(remoteISN + 1, dataPacketToSend);
+        tcpHeader.SetHeaderLen(TCP_HEADER_BASE_LENGTH / 4, dataPacketToSend);
+        //unsigned char flags = 0;
+        //SET_ACK(flags);
+        //tcpHeader.SetFlags(flags, packetToSend);
+        tcpHeader.SetChecksum(0);
+        tcpHeader.SetUrgentPtr(0, dataPacketToSend);
+        tcpHeader.RecomputeChecksum(dataPacketToSend);
+        dataPacketToSend.PushBackHeader(tcpHeader);
+
+        cerr << "Packet to send = " << dataPacketToSend << endl;
+        MinetSend(mux, dataPacketToSend);
+        localISN += sizeOfData;
+    //}
+
+    cerr << "Remaining bytes = " << sockRequest.data.GetSize() << endl;
+    matchingConnection.state.SendBuffer.AddBack(sockRequest.data);
+
+    //question: if the last packet had bytes 11-13, will the server ACK 11 or 13?
+    matchingConnection.state.last_sent = localISN;
+    cerr << "Last sent = " << localISN << endl;
+
+    SockRequestResponse sockReply;
+    sockReply.type = STATUS;
+    sockReply.error = EOK;
+    sockReply.connection = matchingConnection.connection;
+    MinetSend(sock, sockReply);
+
+    matchingConnection.timeout = Time(3.0);
+    matchingConnection.bTmrActive = false;
+
 }
 
 void sendAckNoData(Connection c, unsigned int sequenceNumber, unsigned ackNumber) {
