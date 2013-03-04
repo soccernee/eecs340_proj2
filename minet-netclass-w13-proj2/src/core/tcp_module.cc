@@ -117,19 +117,6 @@ int main(int argc, char *argv[]) {
 
             gettimeofday(&timeElapsed, NULL);
 
-
-
-        if (event.eventtype==MinetEvent::Timeout) {
-            cerr << "timeout\n";
-            cerr << "Timeout after" << timeElapsed << " seconds\n";
-            //timeout occured
-            // find the timeouted connection
-            if (connectionList.FindEarliest()!=connectionList.end()) {
-                ConnectionList<TCPState>::iterator timeoutConnectionIterator = connectionList.FindEarliest();
-            }
-            //resend last packet(s)
-
-        }
         cerr << "second if statement.\n";
         if (event.eventtype!=MinetEvent::Dataflow || event.direction!=MinetEvent::IN) {
             MinetSendToMonitor(MinetMonitoringEvent("Unknown event ignored."));
@@ -228,16 +215,7 @@ int main(int argc, char *argv[]) {
                                    receiveData(*mapping, ipHeader, tcpHeader, p.GetPayload());
                                    cerr << "SeqNumber = "  << mapping->state.last_sent <<  endl;
                                    sendAckNoData(mapping->connection, mapping->state.last_sent + 1, mapping->state.last_recvd + 1);
-                                   mapping->state.last_sent += 2;
                                    cerr << "Sequence number after ACK = " << mapping->state.last_sent << endl;
-
-    //testing code
-    SockRequestResponse ss;
-    size_t bufferSize = mapping->state.RecvBuffer.GetSize();
-    ss.data.AddFront(mapping->state.RecvBuffer.ExtractFront(bufferSize));
-    ss.bytes = (unsigned int)bufferSize;
-    sendData(*mapping, ss);
-    //testing code
 
                                    //STATE TRANSITION
                                    mapping->state.stateOfcnx = ESTABLISHED;
@@ -259,15 +237,6 @@ int main(int argc, char *argv[]) {
                                     cerr << "Recieve ACK. Process Data...\n";
                                     receiveData(*mapping, ipHeader, tcpHeader, p.GetPayload());
                                     mapping->state.last_acked = remoteAckNumber;
-
-
-    //testing code
-    SockRequestResponse ss;
-    size_t bufferSize = mapping->state.RecvBuffer.GetSize();
-    ss.data.AddFront(mapping->state.RecvBuffer.ExtractFront(bufferSize));
-    ss.bytes = (unsigned int)bufferSize;
-    sendData(*mapping, ss);
-    //testing code
                                 }
 
                                 if(IS_FIN(flags)) {
@@ -324,39 +293,7 @@ int main(int argc, char *argv[]) {
                     case CONNECT:
                     {
                         cerr << "SockRequestResponse Connect.\n";
-                        /*
-                        //sendSynAck(s.connection);
-                        cerr << endl;
-                        sleep(2);
-                        //sendSynAck(s.connection);
-                        cerr << endl;
 
-                        TCPState statesend(0,0,0);
-                        Time timesend(2.0);
-                        ConnectionToStateMapping<TCPState> mappingsend(s.connection, timesend, statesend, false);
-                        connectionList.push_back(mappingsend);
-
-                        Packet psend;
-                        IPHeader ipsend;
-                        ipsend.SetProtocol(IP_PROTO_TCP);
-                        ipsend.SetSourceIP(s.connection.src);
-                        ipsend.SetDestIP(s.connection.dest);
-                        ipsend.SetTotalLength(TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH);
-                        psend.PushFrontHeader(ipsend);
-
-                        TCPHeader tcpsend;
-                        tcpsend.SetSourcePort(s.connection.srcport, psend);
-                        tcpsend.SetDestPort(s.connection.destport, psend);
-                        unsigned char sendflags;
-                        SET_SYN(sendflags);
-                        tcpsend.SetSeqNum(600,psend);
-                        tcpsend.SetWinSize(0,psend);
-                        tcpsend.SetFlags(sendflags, psend);
-                        tcpsend.SetChecksum(tcpsend.ComputeChecksum(psend));
-                        cerr << "Outgoing TCP Header is " << tcpsend << "\n";
-                        psend.PushBackHeader(tcpsend);
-                        MinetSend(mux,psend);
-                        */
                     }
                         break;
 
@@ -639,24 +576,29 @@ void sendData (ConnectionToStateMapping<TCPState> & matchingConnection, SockRequ
     cerr << "Send Data!\n";
     cerr << "Data to Send \n" << "sockRequest: " << sockRequest << endl;
 
-    unsigned int localISN = matchingConnection.state.last_acked;
+    unsigned int lastAcked = matchingConnection.state.last_acked;
+    unsigned int lastSent = matchingConnection.state.last_sent;
     unsigned int remoteISN = matchingConnection.state.last_recvd;
     unsigned int receiveWindow = matchingConnection.state.rwnd;
 
 
-    cerr << "Last acked = " << localISN << endl;
+    cerr << "Last acked = " << lastAcked << endl;
+    cerr << "Last sent =  " << lastSent << endl;
     cerr << "Last Received = " << remoteISN << endl;
     cerr << "receive Window = " << receiveWindow << endl;
 
     cerr << "Matching Connection is " << matchingConnection << endl;
     if (sockRequest.bytes != 0) {
-    for (int offset = 0; offset < (signed int)sockRequest.bytes && offset < receiveWindow; offset+= TCP_MAXIMUM_SEGMENT_SIZE) {
+    for (unsigned int iter = 0; (signed int)sockRequest.data.GetSize() > 0 && (lastSent-lastAcked) < receiveWindow; iter++) {
 
-        cerr << "iteration # " << (offset/TCP_MAXIMUM_SEGMENT_SIZE) << endl;;
+        cerr << "iteration # " << iter << endl;;
 
-        int sizeOfData = (sockRequest.bytes);
+        int sizeOfData = (sockRequest.data.GetSize());
         if (sizeOfData > TCP_MAXIMUM_SEGMENT_SIZE) {
             sizeOfData = TCP_MAXIMUM_SEGMENT_SIZE;
+        }
+        if (sizeOfData > receiveWindow) {
+            sizeOfData = receiveWindow;
         }
         cerr << "Size of Data: " << sizeOfData << endl;
         Packet dataPacketToSend(sockRequest.data.ExtractFront(sizeOfData));
@@ -671,7 +613,7 @@ void sendData (ConnectionToStateMapping<TCPState> & matchingConnection, SockRequ
         TCPHeader tcpHeader;
         tcpHeader.SetSourcePort(c_data.srcport, dataPacketToSend);
         tcpHeader.SetDestPort(c_data.destport, dataPacketToSend);
-        tcpHeader.SetSeqNum(localISN+1, dataPacketToSend);
+        tcpHeader.SetSeqNum(lastSent+1, dataPacketToSend);
         tcpHeader.SetAckNum(remoteISN + 1, dataPacketToSend);
         tcpHeader.SetHeaderLen(TCP_HEADER_BASE_LENGTH / 4, dataPacketToSend);
         tcpHeader.SetChecksum(0);
@@ -684,15 +626,15 @@ void sendData (ConnectionToStateMapping<TCPState> & matchingConnection, SockRequ
         cerr << ipHeader << endl;
         cerr << tcpHeader << endl;
         MinetSend(mux, dataPacketToSend);
-        localISN += sizeOfData;
+        lastSent += sizeOfData;
     }
 
     cerr << "Remaining bytes = " << sockRequest.data.GetSize() << endl;
     matchingConnection.state.SendBuffer.AddBack(sockRequest.data);
 
     //question: if the last packet had bytes 11-13, will the server ACK 11 or 13?
-    matchingConnection.state.last_sent = localISN;
-    cerr << "Last sent Byte = " << localISN << endl;
+    matchingConnection.state.last_sent = lastSent;
+    cerr << "Last sent Byte = " << lastSent << endl;
 
     SockRequestResponse sockReply;
     sockReply.type = STATUS;
