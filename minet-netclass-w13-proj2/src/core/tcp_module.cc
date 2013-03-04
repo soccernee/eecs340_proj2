@@ -16,6 +16,7 @@
 #include "Minet.h"
 #include "tcpstate.h"
 #include "constate.h"
+#include "packet_queue.h"
 
 
 using std::cout;
@@ -65,6 +66,10 @@ int main(int argc, char *argv[]) {
     double minimumTimeout = -1;
     Time timeElapsed;
     gettimeofday(&timeElapsed, NULL);
+
+
+    unsigned tcphlen;
+    Packet p;
 
     while (MinetGetNextEvent(event, minimumTimeout)==0) {
         // if we received an unexpected type of event, print error
@@ -131,9 +136,8 @@ int main(int argc, char *argv[]) {
         else {   //  Data from the IP layer below  //
             if (event.handle==mux) {
                 cerr << "mux!\n";
-                Packet p;
                 MinetReceive(mux,p);
-                unsigned tcphlen=TCPHeader::EstimateTCPHeaderLength(p);
+                tcphlen=TCPHeader::EstimateTCPHeaderLength(p);
                 cerr << "estimated header len="<<tcphlen<<"\n";
                 p.ExtractHeaderFromPayload<TCPHeader>(tcphlen);
                 IPHeader ipHeader=p.FindHeader(Headers::IPHeader);
@@ -392,6 +396,76 @@ int main(int argc, char *argv[]) {
                         break;
                     case WRITE:
                         {
+                            // 1) break the data into chunks
+                            // 2) add these packets to a queue
+                            // 3) send the maximum number of packets
+                            // 4) upon acknowledgement send more packets
+
+                         cerr << "Socket requests to write on port " << s.connection.srcport << "to port" << s.connection.destport << "to destination IP" <<s.connection.dest << endl;
+                            ConnectionList<TCPState>::iterator matchingConnection = connectionList.FindMatchingSource(s.connection);
+                            if(matchingConnection != connectionList.end()) {
+
+                                    int localISN;
+                                    if (s.data.GetSize()==0) {
+                                        localISN = 0;
+                                    }
+                                    else {
+                                        localISN = matchingConnection->state.last_sent;
+                                    }
+
+                                    int remoteISN = matchingConnection->state.last_recvd;
+
+                                    //s.data.AddBack(matchingConnection->state.SendBuffer);
+                                    PacketQueue packetQueue;
+
+                                    matchingConnection->timeout = Time(1.0);
+                                    matchingConnection->bTmrActive = true;
+
+                                    for (int offset = 0; offset < (signed int)s.bytes; offset+= 236) {
+                                        Packet dataPacketToSend;
+                                        Connection c_data = matchingConnection->connection;
+                                        IPHeader ipHeader;
+                                        ipHeader.SetProtocol(IP_PROTO_TCP);
+                                        ipHeader.SetSourceIP(c_data.src);
+                                        ipHeader.SetDestIP(c_data.dest);
+                                        ipHeader.SetTotalLength(TCP_HEADER_BASE_LENGTH+IP_HEADER_BASE_LENGTH);
+                                        dataPacketToSend.PushFrontHeader(ipHeader);
+
+                                        TCPHeader tcpHeader;
+                                        tcpHeader.SetSourcePort(c_data.srcport, dataPacketToSend);
+                                        tcpHeader.SetDestPort(c_data.destport, dataPacketToSend);
+                                        tcpHeader.SetSeqNum(localISN, dataPacketToSend);
+                                        tcpHeader.SetAckNum(remoteISN + 1, dataPacketToSend);
+                                        tcpHeader.SetHeaderLen(TCP_HEADER_BASE_LENGTH / 4, dataPacketToSend);
+                                        tcpHeader.SetChecksum(0);
+                                        tcpHeader.SetUrgentPtr(0, dataPacketToSend);
+                                        tcpHeader.RecomputeChecksum(dataPacketToSend);
+                                        dataPacketToSend.PushBackHeader(tcpHeader);
+
+                                        if (s.bytes-offset < 236) {
+                                            //dataPacketToSend.payload.GetData(%s.data, (s.bytes-offset),offset);
+                                        }
+                                        else {
+                                        //dataPacketToSend.payload.GetData(&s.data,236,offset);
+                                        }
+                                        packetQueue.PushPacket(dataPacketToSend);
+
+                                        //generate packet p
+                                        //send p if we can
+                                        //otherwise add p to the queue
+                                        localISN += offset;
+                                    }
+
+
+                            }
+                            else {
+                                cerr << "Unable to find connection.\n";
+                                SockRequestResponse replyToSocket;
+                                replyToSocket.type = STATUS;
+                                replyToSocket.error = EUNKNOWN;
+                                MinetSend(sock, replyToSocket);
+                            }
+
 
 
                         }
