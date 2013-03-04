@@ -26,17 +26,21 @@ using std::string;
 
 Time subtractTime(Time x, Time y);
 
+void sendSyn(ConnectionToStateMapping<TCPState> & mapping);
+
 void sendSynAck(ConnectionToStateMapping<TCPState> & mapping);
 
 void sendAckNoData(Connection c, unsigned int sequenceNumber, unsigned ackNumber);
 
-void receiveData(ConnectionToStateMapping<TCPState> & mapping, IPHeader & ipHeader, TCPHeader & tcpHeader, Buffer & payload);
+bool receiveData(ConnectionToStateMapping<TCPState> & mapping, IPHeader & ipHeader, TCPHeader & tcpHeader, Buffer & payload);
 
 void sendData (ConnectionToStateMapping<TCPState> &matchingConnection, SockRequestResponse sockRequest);
 
 void sendFin(ConnectionToStateMapping<TCPState> & mapping);
 
 void notifySocketOfRead(ConnectionToStateMapping<TCPState> & mapping);
+
+
 
 static MinetHandle mux, sock;
 
@@ -105,7 +109,12 @@ int main(int argc, char *argv[]) {
                                     cerr << "Resending SYN ACK" << endl;
                                 }
                                 break;
-
+                            case SYN_SENT: {
+                                    cerr << "SYN Sent timed out" << endl;
+                                    cerr << "Resending syn" << endl;
+                                    sendSyn(*mapping);
+                                }
+                                break;
                             case ESTABLISHED: {
 
                                 }
@@ -207,15 +216,44 @@ int main(int argc, char *argv[]) {
                             }
                         }
                             break;
+                        case SYN_SENT: {
+                                if(IS_SYN(flags) && IS_ACK(flags)) {
+                                    cerr << "Received SYN ACK" << endl;
+                                    if(remoteAckNumber > mapping->state.last_sent) {
+                                        mapping->state.SetLastRecvd(remoteSequenceNumber);
+                                        mapping->state.SetLastAcked(remoteAckNumber);
+                                        cerr << "Last received sequence was " << remoteSequenceNumber;
+                                        sendAckNoData(mapping->connection, mapping->state.last_sent + 1, mapping->state.last_recvd + 1);
+                                        cerr << "ISN was properly acked" << endl;
+                                        cerr << "Switching to established state" << endl;
+                                        mapping->state.stateOfcnx = ESTABLISHED;
+                                        mapping->bTmrActive = false;
+
+                                        SockRequestResponse notifyApplicationOfEstablishedConnection;
+                                        notifyApplicationOfEstablishedConnection.type = WRITE;
+                                        notifyApplicationOfEstablishedConnection.connection = mapping->connection;
+                                        notifyApplicationOfEstablishedConnection.bytes = 0;
+                                        MinetSend(sock, notifyApplicationOfEstablishedConnection);
+
+
+                                    } else {
+                                        cerr << "Received wrong ack for syn (ISN)" << endl;
+                                    }
+                                } else {
+                                    cerr << "Connection is in SYN_SENT state, expecting syn ack but received something else" << endl;
+                                }
+
+                            }
+                            break;
                         case SYN_RCVD: {
                             if(IS_ACK(flags)) {
                                 if(remoteAckNumber > mapping->state.last_sent) {
                                     //Receive available data
-                                    cerr << "Receive ACK. Process Data...\n";
-                                   receiveData(*mapping, ipHeader, tcpHeader, p.GetPayload());
-                                   cerr << "SeqNumber = "  << mapping->state.last_sent <<  endl;
-                                   sendAckNoData(mapping->connection, mapping->state.last_sent + 1, mapping->state.last_recvd + 1);
-                                   cerr << "Sequence number after ACK = " << mapping->state.last_sent << endl;
+
+                                   bool sendAck = receiveData(*mapping, ipHeader, tcpHeader, p.GetPayload());
+                                   if(sendAck) {
+                                       sendAckNoData(mapping->connection, mapping->state.last_sent + 1, mapping->state.last_recvd + 1);
+                                   }
 
                                    //STATE TRANSITION
                                    mapping->state.stateOfcnx = ESTABLISHED;
@@ -233,9 +271,10 @@ int main(int argc, char *argv[]) {
                             break;
                         case ESTABLISHED: {
                                 cerr << "state of connection = Established\n";
+
+                                bool sendAck;
                                 if(IS_ACK(flags)) {
-                                    cerr << "Recieve ACK. Process Data...\n";
-                                    receiveData(*mapping, ipHeader, tcpHeader, p.GetPayload());
+                                    sendAck = receiveData(*mapping, ipHeader, tcpHeader, p.GetPayload());
                                     mapping->state.last_acked = remoteAckNumber;
                                 }
 
@@ -243,11 +282,10 @@ int main(int argc, char *argv[]) {
                                     cerr << "FIN occured" << endl;
                                     mapping->state.last_recvd += 1;
                                 }
-                                if(IS_ACK(flags) || IS_FIN(flags)) {
+                                if((IS_ACK(flags) && sendAck) || IS_FIN(flags)) {
                                     sendAckNoData(mapping->connection, mapping->state.last_sent + 1, mapping->state.last_recvd + 1);
-                                } else {
-                                    cerr << "Received unknown packet while in established state, packet was not a fin or ack" << endl;
                                 }
+
 
                                 if(IS_FIN(flags)) {
                                     //STATE TRANSITION
@@ -260,6 +298,10 @@ int main(int argc, char *argv[]) {
                                     requestApplicationClose.bytes = 0;
                                     requestApplicationClose.data = emptyBuffer;
                                     MinetSend(sock, requestApplicationClose);
+                                }
+
+                                if(!(IS_ACK(flags) || IS_FIN(flags))) {
+                                    cerr << "Received packet that is not ack or fin while in established state.  Thats not right" << endl;
                                 }
 
 
@@ -275,6 +317,7 @@ int main(int argc, char *argv[]) {
                                 }
                             }
                             break;
+
                     }
 
 
@@ -294,6 +337,26 @@ int main(int argc, char *argv[]) {
                     {
                         cerr << "SockRequestResponse Connect.\n";
 
+                        unsigned int isn;
+                        isn = timeElapsed.tv_usec / 4;
+                        isn += timeElapsed.tv_sec * 1000000 / 4;
+
+                        cerr << "Generated ISN is " << isn << endl;
+
+                        TCPState statesend(isn, SYN_SENT ,5);
+                        ConnectionToStateMapping<TCPState> mappingsend(s.connection, 0, statesend, false);
+
+                        cerr << "Adding new active open connection to connection list" << endl;
+
+                        sendSyn(mappingsend);
+
+                        connectionList.push_back(mappingsend);
+
+                        SockRequestResponse replyToSocket;
+                        replyToSocket.type = STATUS;
+                        replyToSocket.connection = s.connection;
+                        replyToSocket.error = EOK;
+                        MinetSend(sock, replyToSocket);
                     }
                         break;
 
@@ -315,7 +378,7 @@ int main(int argc, char *argv[]) {
                                 bool timerActive = false;
                                 ConnectionToStateMapping<TCPState> mapping(s.connection, time, state, timerActive);
                                 connectionList.push_back(mapping);
-                                cerr << "Adding new connection to connection list";
+                                cerr << "Adding new passive open connection to connection list" << endl;
 
                                 SockRequestResponse replyToSocket;
                                 replyToSocket.type = STATUS;
@@ -334,11 +397,6 @@ int main(int argc, char *argv[]) {
                         break;
                     case WRITE:
                         {
-                            // 1) break the data into chunks
-                            // 2) add these packets to a queue
-                            // 3) send the maximum number of packets
-                            // 4) upon acknowledgement send more packets
-
                          cerr << "Socket requests to write on port " << s.connection.srcport << "to port" << s.connection.destport << "to destination IP" <<s.connection.dest << endl;
                          cerr << "Data it wishes to send: " << s.data << endl;
 
@@ -459,6 +517,48 @@ void notifySocketOfRead(ConnectionToStateMapping<TCPState> & mapping) {
     MinetSend(sock, toSocket);
 }
 
+void sendSyn(ConnectionToStateMapping<TCPState> & mapping) {
+    mapping.timeout = Time(3.0);
+    mapping.bTmrActive = true;
+
+
+    Packet psend;
+    IPHeader ipsend;
+    ipsend.SetProtocol(IP_PROTO_TCP);
+    ipsend.SetSourceIP(mapping.connection.src);
+    ipsend.SetDestIP(mapping.connection.dest);
+    ipsend.SetTotalLength(TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH);
+    psend.PushFrontHeader(ipsend);
+
+    TCPHeader tcpsend;
+    tcpsend.SetSourcePort(mapping.connection.srcport, psend);
+    tcpsend.SetDestPort(mapping.connection.destport, psend);
+    tcpsend.SetSeqNum(mapping.state.last_sent,psend);
+    tcpsend.SetAckNum(mapping.state.last_recvd + 1, psend);
+    tcpsend.SetHeaderLen(TCP_HEADER_BASE_LENGTH / 4, psend);
+
+    unsigned char sendflags;
+    SET_SYN(sendflags);
+    tcpsend.SetFlags(sendflags, psend);
+    tcpsend.SetWinSize(0,psend);
+    tcpsend.SetChecksum(0);
+    tcpsend.SetUrgentPtr(0, psend);
+    tcpsend.RecomputeChecksum(psend);
+
+    cerr << "Outgoing TCP Header is " << tcpsend << "\n";
+
+
+    psend.PushBackHeader(tcpsend);
+
+    cerr << "Is checksum correct?" << tcpsend.IsCorrectChecksum(psend) << endl;
+
+    MinetSend(mux,psend);
+
+    cerr << "Setting 3s timeout" << endl;
+
+    cerr << "The timeout is " << mapping.timeout << endl;
+}
+
 void sendFin(ConnectionToStateMapping<TCPState> & mapping) {
     cerr << "Sending fin" << endl;
 
@@ -517,7 +617,7 @@ Time subtractTime(Time x, Time y) {
 }
 
 //This does not ack, must call something to ack after calling receive data
-void receiveData(ConnectionToStateMapping<TCPState> & mapping, IPHeader & ipHeader, TCPHeader & tcpHeader, Buffer & payload) {
+bool receiveData(ConnectionToStateMapping<TCPState> & mapping, IPHeader & ipHeader, TCPHeader & tcpHeader, Buffer & payload) {
     unsigned char flags;
     tcpHeader.GetFlags(flags);
     unsigned int remoteSequenceNumber;
@@ -547,27 +647,44 @@ void receiveData(ConnectionToStateMapping<TCPState> & mapping, IPHeader & ipHead
 
     unsigned int firstSequenceNumReceived = remoteSequenceNumber;
     unsigned int lastSequenceNumReceived = remoteSequenceNumber + payloadSize - 1;
+    if(firstSequenceNumReceived == mapping.state.last_recvd + 1 && payloadSize == 0) {
+        cerr << "Received an ack for the correct last sent sequence number, no data has been sent" << endl;
+        cerr << "Do not send an ack response" << endl;
+        //mapping.state.last_recvd = firstSequenceNumReceived;
+        //No need to update last received since we received 0 data bytes
+        return false;
+    }
     if(firstSequenceNumReceived <= mapping.state.last_recvd + 1) {
         if(lastSequenceNumReceived >= mapping.state.last_recvd + 1) {
             unsigned int copySize = lastSequenceNumReceived - mapping.state.last_recvd;
             cerr << "Adding " << copySize << " bytes to receive buffer" << endl;
             if(copySize > 0) {
+                //append [last_recvd + 1, lastSequenceNumReceived] to receive buffer
                 mapping.state.RecvBuffer.AddBack(payload.ExtractBack(copySize));
                 cerr << "Receive buffer now has " << mapping.state.RecvBuffer.GetSize() << " bytes" << endl;
+
                 notifySocketOfRead(mapping);
+                mapping.state.last_recvd = lastSequenceNumReceived;
+                cerr << "Setting last received to " << lastSequenceNumReceived << endl;
+                return true;
+            } else {
+                cerr << "Somehow seqence numbers are valid but copy size is 0, this shouldn't happen.  Programmer error" << endl;
+                return false;
             }
 
 
-            //append [last_recvd + 1, lastSequenceNumReceived] to receive buffer
-            mapping.state.last_recvd = lastSequenceNumReceived;
-            cerr << "Setting last received to " << lastSequenceNumReceived << endl;
+
         } else {
             //else all received bytes are less than last received byte
             cerr << "All received data are less than last received sequence byte, none is useful" << endl;
+            cerr << "Ack for last received + 1 should be sent in order to request the next expected byte" << endl;
+            return true;
         }
     } else {
-        cerr << "All data we received is beyond what we are looking for.  Re-request last received + 1" << endl;
+        cerr << "All data we received is beyond what we are looking for. " << endl;
+        cerr << "Ack for last received + 1 should be sent in order to request the next expected byte" << endl;
         //Resend ack of last received + 1.  All the data we received is beyond what we are looking for
+        return true;
     }
 }
 
