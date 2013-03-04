@@ -25,13 +25,15 @@ using std::string;
 
 Time subtractTime(Time x, Time y);
 
-void sendSynAck(Connection c, unsigned int remoteISN, unsigned int localISN);
+void sendSynAck(ConnectionToStateMapping<TCPState> & mapping);
 
 void sendAckNoData(Connection c, unsigned int sequenceNumber, unsigned ackNumber);
 
 void receiveData(ConnectionToStateMapping<TCPState> & mapping, IPHeader & ipHeader, TCPHeader & tcpHeader, Buffer & payload);
 
 void sendFin(ConnectionToStateMapping<TCPState> & mapping);
+
+void notifySocketOfRead(ConnectionToStateMapping<TCPState> & mapping);
 
 static MinetHandle mux, sock;
 
@@ -60,13 +62,56 @@ int main(int argc, char *argv[]) {
 
     MinetEvent event;
     ConnectionList<TCPState> connectionList;
-    double minimumTimeout = 1.0;
+    double minimumTimeout = -1;
     Time timeElapsed;
     gettimeofday(&timeElapsed, NULL);
 
     while (MinetGetNextEvent(event, minimumTimeout)==0) {
         // if we received an unexpected type of event, print error
         cerr << "event\n";
+
+
+         //find how much time has elapsed since the last clocking event
+           Time timeSinceLastClock;
+           gettimeofday(&timeSinceLastClock, NULL);
+           timeElapsed = subtractTime(timeSinceLastClock, timeElapsed);
+           cerr << "Time elapsed = " << timeElapsed << "\n";
+
+            //after every event or timeout, update the timeout for each connection
+           ConnectionList<TCPState>::iterator mapping = connectionList.begin();
+            for (; mapping!=connectionList.end(); mapping++) {
+                if (mapping->bTmrActive == true) {
+                    cerr << "Updating connection " << mapping->connection << " timeout" << endl;
+                    if(mapping->timeout > timeElapsed) {
+                        mapping->timeout = subtractTime(mapping->timeout, timeElapsed);
+                        cerr << "New timeout " << mapping->timeout << endl;
+                    } else {
+                        mapping->timeout = Time(0.0);
+                        mapping->bTmrActive = false;
+                        cerr << "Connection has timed out, turning off timer" << endl;
+
+                        //ALSO HANDLE TIMEOUT SHIT
+
+                        switch(mapping->state.stateOfcnx) {
+                            case SYN_RCVD: {
+                                    sendSynAck(*mapping);
+                                    cerr << "Resending SYN ACK" << endl;
+                                }
+                                break;
+
+                            case ESTABLISHED: {
+
+                                }
+                                break;
+                        }
+                    }
+                }
+            }
+
+            gettimeofday(&timeElapsed, NULL);
+
+
+
         if (event.eventtype==MinetEvent::Timeout) {
             cerr << "timeout\n";
             cerr << "Timeout after" << timeElapsed << " seconds\n";
@@ -83,7 +128,7 @@ int main(int argc, char *argv[]) {
             MinetSendToMonitor(MinetMonitoringEvent("Unknown event ignored."));
             // if we received a valid event from Minet, do processing
         }
-         else {   //  Data from the IP layer below  //
+        else {   //  Data from the IP layer below  //
             if (event.handle==mux) {
                 cerr << "mux!\n";
                 Packet p;
@@ -160,6 +205,7 @@ int main(int argc, char *argv[]) {
 
                 } else {
                     cerr << "Current connection state: " << mapping->state << "\n";
+                    cerr << "Current connection timer remaining: " << mapping->timeout << endl;
                     unsigned char flags;
                     tcpHeader.GetFlags(flags);
 
@@ -173,17 +219,21 @@ int main(int argc, char *argv[]) {
                     switch(mapping->state.stateOfcnx) {
                         case LISTEN: {
                             if(IS_SYN(flags)) {
+
+
                                 cerr << "SYN Received, remote ISN is " << remoteSequenceNumber << endl;
 
-                                sendSynAck(c, remoteSequenceNumber, mapping->state.last_acked);
-
-
                                 mapping->connection = c;
-                                //STATE TRANSITION
-                                mapping->state.stateOfcnx = SYN_RCVD;
-                                mapping->state.last_sent = mapping->state.last_acked; //==ISN
                                 mapping->state.last_recvd = remoteSequenceNumber;
                                 mapping->state.rwnd = remoteWindowSize;
+
+                                sendSynAck(*mapping);
+
+                                //STATE TRANSITION
+                                mapping->state.stateOfcnx = SYN_RCVD;
+
+
+
 
                                 SockRequestResponse notifyApplicationOfAcceptedConnection;
                                 notifyApplicationOfAcceptedConnection.type = WRITE;
@@ -196,25 +246,28 @@ int main(int argc, char *argv[]) {
                                 cerr << "Connection is in LISTEN state, but the received packet does not contain a SYN" << endl;
                             }
                         }
-                        break;
+                            break;
                         case SYN_RCVD: {
                             if(IS_ACK(flags)) {
                                 if(remoteAckNumber > mapping->state.last_sent) {
                                     //Receive available data
                                    receiveData(*mapping, ipHeader, tcpHeader, p.GetPayload());
+                                   sendAckNoData(mapping->connection, mapping->state.last_sent + 1, mapping->state.last_recvd + 1);
+
                                    //STATE TRANSITION
                                    mapping->state.stateOfcnx = ESTABLISHED;
+                                   mapping->bTmrActive = false;
                                    mapping->state.last_acked = remoteAckNumber;
                                 } else {
                                     cerr << "Did not receive correct ack number in response to synack" << endl;
-                                    sendSynAck(c, mapping->state.last_recvd, mapping->state.last_sent);
+                                    sendSynAck(*mapping);
                                 }
                             } else if(IS_SYN(flags)) {
                                 cerr << "SYNACK was probably lost, resending" << endl;
-                                sendSynAck(c, mapping->state.last_recvd, mapping->state.last_sent);
+                                sendSynAck(*mapping);
                             }
                         }
-                        break;
+                            break;
                         case ESTABLISHED: {
                                 if(IS_ACK(flags)) {
                                     receiveData(*mapping, ipHeader, tcpHeader, p.GetPayload());
@@ -262,7 +315,7 @@ int main(int argc, char *argv[]) {
 
                 }
 
-                cerr << "\n\n\n";
+
             }
             //  Data from the Sockets layer above  //
             if (event.handle==sock) {
@@ -307,7 +360,14 @@ int main(int argc, char *argv[]) {
                         cerr << "Socket requests to listen on port " << s.connection.srcport << endl;
                             ConnectionList<TCPState>::iterator matchingConnection = connectionList.FindMatchingSource(s.connection);
                             if(matchingConnection == connectionList.end()) {
-                                int isn = 666;
+                                cerr << "Current time is " << timeElapsed.tv_sec << "." << timeElapsed.tv_usec << " seconds" << endl;
+
+                                unsigned int isn;
+                                isn = timeElapsed.tv_usec / 4;
+                                isn += timeElapsed.tv_sec * 1000000 / 4;
+
+                                cerr << "Generated ISN is " << isn << endl;
+
                                 TCPState state(isn, LISTEN, 5);
                                 Time time(0.0);
                                 bool timerActive = false;
@@ -378,9 +438,25 @@ int main(int argc, char *argv[]) {
                     case STATUS:
                         {
                             ConnectionList<TCPState>::iterator matchingConnection = connectionList.FindMatching(s.connection);
+
+
                             if(matchingConnection != connectionList.end()) {
-                                cerr << "Socket actually read " << s.bytes << " bytes out of the buffer" << endl;
-                                cerr << "We might need to resend data, deal with this later" << endl;
+                                unsigned int receiveBufferSize = matchingConnection->state.RecvBuffer.GetSize();
+                                unsigned int socketBytesPreviouslyRead = s.bytes;
+                                cerr << "Socket actually read " << s.bytes << " bytes out of the receive buffer" << endl;
+                                cerr << "Receive buffer is now length " << matchingConnection->state.RecvBuffer.GetSize() << endl;
+                                cerr << "Removing first " << s.bytes << " from receive buffer" << endl;
+
+                                matchingConnection->state.RecvBuffer.Erase(0, socketBytesPreviouslyRead);
+
+                                unsigned int remainingBytes = receiveBufferSize - socketBytesPreviouslyRead;
+                                if(remainingBytes > 0) {
+                                    cerr << matchingConnection->state.RecvBuffer.GetSize() << " bytes remaining for socket to read from read buffer" << endl;
+                                    notifySocketOfRead(*matchingConnection);
+
+                                } else {
+                                    cerr << "Socket has read all data from receive buffer, which is now empty" << endl;
+                                }
                             } else {
                                 cerr << "Received a status for a connection not in the connection list" << endl;
                             }
@@ -389,39 +465,38 @@ int main(int argc, char *argv[]) {
                 }
             }
 
-            cerr << "down under\n";
-            //find how much time has elapsed since the last clocking event
-           Time timeSinceLastClock;
-           gettimeofday(&timeSinceLastClock, NULL);
-           timeElapsed = subtractTime(timeSinceLastClock, timeElapsed);
-           cerr << "Time elapsed = " << timeElapsed << "\n";
 
-            //after every event or timeout, update the timeout for each connection
-           ConnectionList<TCPState>::iterator connectionListIterator = connectionList.begin();
-            for (; connectionListIterator!=connectionList.end(); connectionListIterator++) {
-                ConnectionToStateMapping<TCPState> updateConnectionToStateMapping = *connectionListIterator;
-                if (updateConnectionToStateMapping.bTmrActive == true) {
-                    updateConnectionToStateMapping.timeout = subtractTime(updateConnectionToStateMapping.timeout, timeElapsed);
-                }
-            }
 
-            //find the new smallest Timeout
-            ConnectionList<TCPState>::iterator earliestTimeout = connectionList.FindEarliest();
-            if (earliestTimeout!=connectionList.end()) {
-                minimumTimeout = earliestTimeout->timeout.tv_sec + (earliestTimeout->timeout.tv_usec/1000000.0);
-            }
-            else {
-                minimumTimeout = 100000;
-            }
-            cerr << "new smallest Timeout = " << minimumTimeout << "\n";
+        }
 
-            gettimeofday(&timeElapsed, NULL);
+        cerr << "down under\n";
 
+        //find the new smallest Timeout
+        ConnectionList<TCPState>::iterator earliestTimeout = connectionList.FindEarliest();
+        if (earliestTimeout!=connectionList.end()) {
+            cerr << "Minimum timeout found" << endl;
+            minimumTimeout = earliestTimeout->timeout.tv_sec + (earliestTimeout->timeout.tv_usec/1000000.0);
+        }
+        else {
+            cerr << "No minimum timeout found, turning off timer" << endl;
+            minimumTimeout = -1;
+        }
+        cerr << "new smallest Timeout = " << minimumTimeout << "\n";
+
+        cerr << "\n\n\n";
     }
     return 0;
 }
 
-
+void notifySocketOfRead(ConnectionToStateMapping<TCPState> & mapping) {
+    SockRequestResponse toSocket;
+    toSocket.type = WRITE;
+    toSocket.connection = mapping.connection;
+    toSocket.data = mapping.state.RecvBuffer;
+    toSocket.error = EOK;
+    cerr << "Sending recieve buffer of size" << mapping.state.RecvBuffer.GetSize() << " bytes to socket" << endl;
+    MinetSend(sock, toSocket);
+}
 
 void sendFin(ConnectionToStateMapping<TCPState> & mapping) {
     cerr << "Sending fin" << endl;
@@ -480,7 +555,7 @@ Time subtractTime(Time x, Time y) {
        return resultTime;
 }
 
-
+//This does not ack, must call something to ack after calling receive data
 void receiveData(ConnectionToStateMapping<TCPState> & mapping, IPHeader & ipHeader, TCPHeader & tcpHeader, Buffer & payload) {
     unsigned char flags;
     tcpHeader.GetFlags(flags);
@@ -517,30 +592,21 @@ void receiveData(ConnectionToStateMapping<TCPState> & mapping, IPHeader & ipHead
             unsigned int copySize = lastSequenceNumReceived - mapping.state.last_recvd;
             cerr << "Adding " << copySize << " bytes to receive buffer" << endl;
             if(copySize > 0) {
-                SockRequestResponse toSocket;
-                toSocket.type = WRITE;
-                toSocket.connection = mapping.connection;
-                toSocket.data = payload.ExtractBack(copySize);
-                toSocket.bytes = copySize;
-                toSocket.error = EOK;
-                cerr << "Sending bytes to socket" << endl;
-                MinetSend(sock, toSocket);
+                mapping.state.RecvBuffer.AddBack(payload.ExtractBack(copySize));
+                cerr << "Receive buffer now has " << mapping.state.RecvBuffer.GetSize() << " bytes" << endl;
+                notifySocketOfRead(mapping);
             }
 
 
             //append [last_recvd + 1, lastSequenceNumReceived] to receive buffer
             mapping.state.last_recvd = lastSequenceNumReceived;
             cerr << "Setting last received to " << lastSequenceNumReceived << endl;
-
-            //sendAckNoData(mapping.connection, mapping.state.last_sent + 1, mapping.state.last_recvd + 1);
         } else {
             //else all received bytes are less than last received byte
             cerr << "All received data are less than last received sequence byte, none is useful" << endl;
-            //sendAckNoData(mapping.connection, mapping.state.last_sent + 1, mapping.state.last_recvd + 1);
         }
     } else {
         cerr << "All data we received is beyond what we are looking for.  Re-request last received + 1" << endl;
-        //sendAckNoData(mapping.connection, mapping.state.last_sent + 1, mapping.state.last_recvd + 1);
         //Resend ack of last received + 1.  All the data we received is beyond what we are looking for
     }
 }
@@ -584,20 +650,24 @@ void sendAckNoData(Connection c, unsigned int sequenceNumber, unsigned ackNumber
     MinetSend(mux, packetToSend);
 }
 
-void sendSynAck(Connection c, unsigned int remoteISN, unsigned int localISN) {
+void sendSynAck(ConnectionToStateMapping<TCPState> & mapping) {
+
+    mapping.timeout = Time(3.0);
+    mapping.bTmrActive = true;
+
     Packet synAckPacketToSend;
     IPHeader ipHeader;
     ipHeader.SetProtocol(IP_PROTO_TCP);
-    ipHeader.SetSourceIP(c.src);
-    ipHeader.SetDestIP(c.dest);
+    ipHeader.SetSourceIP(mapping.connection.src);
+    ipHeader.SetDestIP(mapping.connection.dest);
     ipHeader.SetTotalLength(TCP_HEADER_BASE_LENGTH+IP_HEADER_BASE_LENGTH);
     synAckPacketToSend.PushFrontHeader(ipHeader);
 
     TCPHeader tcpHeader;
-    tcpHeader.SetSourcePort(c.srcport, synAckPacketToSend);
-    tcpHeader.SetDestPort(c.destport, synAckPacketToSend);
-    tcpHeader.SetSeqNum(localISN, synAckPacketToSend);
-    tcpHeader.SetAckNum(remoteISN + 1, synAckPacketToSend);
+    tcpHeader.SetSourcePort(mapping.connection.srcport, synAckPacketToSend);
+    tcpHeader.SetDestPort(mapping.connection.destport, synAckPacketToSend);
+    tcpHeader.SetSeqNum(mapping.state.last_sent, synAckPacketToSend);
+    tcpHeader.SetAckNum(mapping.state.last_recvd + 1, synAckPacketToSend);
     tcpHeader.SetHeaderLen(TCP_HEADER_BASE_LENGTH / 4, synAckPacketToSend);
     unsigned char flags;
     SET_ACK(flags);
