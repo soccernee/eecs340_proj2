@@ -119,6 +119,17 @@ int main(int argc, char *argv[]) {
 
                                 }
                                 break;
+                            case TIME_WAIT: {
+                                cerr << "Time has expired. Closing connection." << endl;
+                                ConnectionList<TCPState>::iterator temp = mapping;
+                                temp--;
+                                connectionList.erase(mapping);
+
+                                    mapping = temp;
+
+                                cerr << "Connection Closed.";
+                            }
+                            break;
                         }
                     }
                 }
@@ -174,7 +185,7 @@ int main(int argc, char *argv[]) {
                     //end of test code
 
                 }
-              //  else
+              else
                {
                     cerr << "Current connection state: " << mapping->state << "\n";
                     cerr << "Current connection timer remaining: " << mapping->timeout << endl;
@@ -317,7 +328,76 @@ int main(int argc, char *argv[]) {
                                 }
                             }
                             break;
+                        case FIN_WAIT1: {
+                                cerr << "State: FIN_WAIT_1\n";
+                                 if (IS_ACK(flags) && IS_FIN(flags)) {
+                                     if(remoteAckNumber > mapping->state.last_sent) {
+                                         cerr << "Received ACK AND FIN. Sending ACK. Now in state TIME_WAIT\n";
+                                         mapping->state.stateOfcnx = TIME_WAIT;
+                                         //is there the possibility that the packet contains data?
+                                         mapping->state.last_recvd++;
+                                         sendAckNoData(mapping->connection, mapping->state.last_sent, mapping->state.last_recvd);
 
+                                         Time newTimeout (2*MSL_TIME_SECS);
+                                         mapping->timeout = newTimeout;
+                                         mapping->bTmrActive = true;
+                                     }
+                                 }
+                                 else if(IS_ACK(flags)) {
+                                        if(remoteAckNumber > mapping->state.last_sent) {
+                                            cerr << "Received ACK. Now in state FIN_WAIT_2 (waiting for FIN)\n";
+                                            mapping->state.stateOfcnx = FIN_WAIT2;
+                                        }
+                                 }
+                                 else if (IS_FIN(flags)) {
+                                    if(remoteAckNumber > mapping->state.last_sent) {
+                                            cerr << "Received FIN. Sending ACK. Now in state CLOSING\n";
+                                            mapping->state.stateOfcnx = CLOSING;
+                                            //is there the possibility that the packet contains data?
+                                            mapping->state.last_recvd++;
+                                            sendAckNoData(mapping->connection, mapping->state.last_sent, mapping->state.last_recvd);
+
+                                        }
+                                 } else {
+                                    cerr << "Did not receive ACK and/or FIN while in state FIN_WAIT_1. Not supposed to happen.\n";
+                                 }
+
+                                }
+                                break;
+                            case FIN_WAIT2: {
+                                cerr << "State: FIN_WAIT2" << endl;
+                                if (IS_FIN(flags)) {
+                                    if(remoteAckNumber > mapping->state.last_sent) {
+                                         cerr << "Recieved FIN. Sending ACK. Now in state TIME_WAIT." << endl;
+                                         mapping->state.stateOfcnx = TIME_WAIT;
+                                         //is there the possibility that the packet contains data?
+                                         mapping->state.last_recvd++;
+                                         sendAckNoData(mapping->connection, mapping->state.last_sent, mapping->state.last_recvd);
+
+                                         Time newTimeout (2*MSL_TIME_SECS);
+                                         mapping->timeout = newTimeout;
+                                         mapping->bTmrActive = true;
+                                    }
+                                }
+                                else {
+                                    cerr << "Did not receive FIN while in state FIN_WAIT_2. Not supposed to happen." << endl;
+                                }
+                                }
+                                break;
+                            case CLOSING: {
+                                cerr << "State: CLOSING" << endl;
+                                if (IS_ACK(flags)) {
+                                    if(remoteAckNumber > mapping->state.last_sent) {
+                                         cerr << "Recieved ACK. Now in state TIME_WAIT." << endl;
+                                         mapping->state.stateOfcnx = TIME_WAIT;
+
+                                         Time newTimeout (2*MSL_TIME_SECS);
+                                         mapping->timeout = newTimeout;
+                                         mapping->bTmrActive = true;
+                                    }
+                                }
+                            }
+                            break;
                     }
 
 
@@ -395,10 +475,27 @@ int main(int argc, char *argv[]) {
                             }
                         }
                         break;
+                    case FORWARD:
+                        {
+                            SockRequestResponse replyToSocket;
+                            replyToSocket.type = STATUS;
+                            replyToSocket.error = EOK;
+                            MinetSend(sock, replyToSocket);
+
+                        }
+
+                        break;
                     case WRITE:
                         {
                          cerr << "Socket requests to write on port " << s.connection.srcport << "to port" << s.connection.destport << "to destination IP" <<s.connection.dest << endl;
                          cerr << "Data it wishes to send: " << s.data << endl;
+
+                         //test code
+                        cerr << "Temp = " << s.data[0] << endl << endl;
+                         if (s.data[0] == 'C') {
+                            cerr << "Sock Requests to CLOSE" << endl;
+                            s.type = CLOSE;
+                         } else {
 
                             ConnectionList<TCPState>::iterator matchingConnection = connectionList.FindMatchingSource(s.connection);
                             if(matchingConnection != connectionList.end()) {
@@ -411,23 +508,15 @@ int main(int argc, char *argv[]) {
                                 replyToSocket.error = EUNKNOWN;
                                 MinetSend(sock, replyToSocket);
                             }
-
-
-
-                        }
-                        break;
-                    case FORWARD:
-                        {
-                            SockRequestResponse replyToSocket;
-                            replyToSocket.type = STATUS;
-                            replyToSocket.error = EOK;
-                            MinetSend(sock, replyToSocket);
+                            break;   //moved this up two just to test
+                         }
 
                         }
 
-                        break;
+
                     case CLOSE:
                         {
+                            cerr << "CLOSE" << endl;
                             ConnectionList<TCPState>::iterator matchingConnection = connectionList.FindMatching(s.connection);
                             if(matchingConnection == connectionList.end()) {
                                 cerr << "Tried to close a nonexistent connection" << endl;
@@ -447,7 +536,29 @@ int main(int argc, char *argv[]) {
                                     replyToSocket.connection = matchingConnection->connection;
                                     MinetSend(sock, replyToSocket);
 
-                                } else {
+                                } else if(matchingConnection->state.stateOfcnx = ESTABLISHED) {
+                                    cerr << "Application sends CLOSE when state = ESTABLISHED.\n";
+                                    sendFin(*matchingConnection);
+                                    matchingConnection->state.stateOfcnx = FIN_WAIT1;
+
+                                    SockRequestResponse replyToSocket;
+                                    replyToSocket.type = STATUS;
+                                    replyToSocket.error = EOK;
+                                    replyToSocket.connection = matchingConnection->connection;
+                                    MinetSend(sock, replyToSocket);
+
+
+                                } else if (matchingConnection->state.stateOfcnx = SYN_SENT) {
+                                    cerr << "Application wishes to close after sending SYN. Going back to closed state.\n";
+                                    matchingConnection->state.stateOfcnx = CLOSED;
+
+                                    SockRequestResponse replyToSocket;
+                                    replyToSocket.type = STATUS;
+                                    replyToSocket.error = EOK;
+                                    replyToSocket.connection = matchingConnection->connection;
+                                    MinetSend(sock, replyToSocket);
+                                }
+                                else {
                                     cerr << "Attemping to close connection in unknown state";
                                 }
                             }
@@ -584,8 +695,6 @@ void sendFin(ConnectionToStateMapping<TCPState> & mapping) {
     tcpHeader.SetUrgentPtr(0, packetToSend);
     tcpHeader.RecomputeChecksum(packetToSend);
     packetToSend.PushBackHeader(tcpHeader);
-
-
 
     cerr << endl << "Sending response: " << endl;
     cerr << "Is checksum correct?" << tcpHeader.IsCorrectChecksum(packetToSend) << endl;
