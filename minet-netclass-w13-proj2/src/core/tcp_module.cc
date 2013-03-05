@@ -127,8 +127,7 @@ int main(int argc, char *argv[]) {
                                 ConnectionList<TCPState>::iterator temp = mapping;
                                 temp--;
                                 connectionList.erase(mapping);
-
-                                    mapping = temp;
+                                mapping = temp;
 
                                 cerr << "Connection Closed.";
                             }
@@ -140,7 +139,6 @@ int main(int argc, char *argv[]) {
 
             gettimeofday(&timeElapsed, NULL);
 
-        cerr << "second if statement.\n";
         if (event.eventtype!=MinetEvent::Dataflow || event.direction!=MinetEvent::IN) {
             MinetSendToMonitor(MinetMonitoringEvent("Unknown event ignored."));
             // if we received a valid event from Minet, do processing
@@ -149,7 +147,6 @@ int main(int argc, char *argv[]) {
             if (event.handle==mux) {
                 cerr << "mux!\n";
                 MinetReceive(mux,p);
-                cerr << "no man ground\n";
                 tcphlen=TCPHeader::EstimateTCPHeaderLength(p);
                 cerr << "estimated header len="<<tcphlen<<"\n";
                 p.ExtractHeaderFromPayload<TCPHeader>(tcphlen);
@@ -173,7 +170,7 @@ int main(int argc, char *argv[]) {
                 ConnectionList<TCPState>::iterator mapping = connectionList.FindMatching(c);
                 if(mapping == connectionList.end()) {
                     cerr << "Received packet from a connection not in the list" << endl;
-
+/*
                     //testing code
                     Time timev(1.0);
                     TCPState newstate;
@@ -186,7 +183,7 @@ int main(int argc, char *argv[]) {
                     connectionList.push_front(newMapping);
                      mapping = connectionList.FindMatching(c);
                     //end of test code
-
+*/
                 }
               else
                {
@@ -219,7 +216,7 @@ int main(int argc, char *argv[]) {
                                 mapping->state.stateOfcnx = SYN_RCVD;
 
                                 SockRequestResponse notifyApplicationOfAcceptedConnection;
-                                notifyApplicationOfAcceptedConnection.type = WRITE;
+                                notifyApplicationOfAcceptedConnection.type = ACCEPT;
                                 notifyApplicationOfAcceptedConnection.connection = mapping->connection;
                                 notifyApplicationOfAcceptedConnection.bytes = 0;
                                 MinetSend(sock, notifyApplicationOfAcceptedConnection);
@@ -269,7 +266,9 @@ int main(int argc, char *argv[]) {
 
                                    bool sendAck = receiveData(*mapping, ipHeader, tcpHeader, p.GetPayload());
                                    if(sendAck) {
-                                       sendAckNoData(mapping->connection, mapping->state.last_sent + 1, mapping->state.last_recvd + 1);
+                                       mapping->state.last_sent++;
+                                       mapping->state.last_recvd++;
+                                       sendAckNoData(mapping->connection, mapping->state.last_sent, mapping->state.last_recvd);
                                    }
 
                                    //STATE TRANSITION
@@ -279,6 +278,14 @@ int main(int argc, char *argv[]) {
                                    cerr << "SYN Received, SYNACK Sent, Ack Received, passive open connection established" << endl;
                                    cerr << "Last sent " << mapping->state.last_sent << endl;
                                    cerr << "Last acked" << mapping->state.last_acked << endl;
+
+                                    //new code
+                                   SockRequestResponse notifyApplicationOfEstablishedConnection;
+                                   notifyApplicationOfEstablishedConnection.type = WRITE;
+                                   notifyApplicationOfEstablishedConnection.connection = mapping->connection;
+                                   notifyApplicationOfEstablishedConnection.bytes = 0;
+                                   MinetSend(sock, notifyApplicationOfEstablishedConnection);
+
 
                                 } else {
                                     cerr << "Did not receive correct ack number in response to synack" << endl;
@@ -293,17 +300,10 @@ int main(int argc, char *argv[]) {
                         case ESTABLISHED: {
                                 cerr << "state of connection = Established\n";
 
-
-
                                 bool sendAck;
                                 if(IS_ACK(flags)) {
                                     updateSendBufferAndAckTracker(*mapping, remoteAckNumber);
                                     sendAck = receiveData(*mapping, ipHeader, tcpHeader, p.GetPayload());
-                                }
-
-                                if(IS_FIN(flags)) {
-                                    cerr << "FIN occured" << endl;
-                                    mapping->state.last_recvd += 1;
                                 }
 
                                 //Make sure not to send an ack if we receive an ack with correct num and no data (sendack = false) and there is no data to send
@@ -313,6 +313,10 @@ int main(int argc, char *argv[]) {
 
 
                                 if(IS_FIN(flags)) {
+                                    cerr << "FIN occured" << endl;
+                                    //mapping->state.last_recvd += 1;
+                                    //sendAckNoData(mapping->connection, mapping->state.last_sent, mapping->state.last_recvd);
+
                                     //STATE TRANSITION
                                     mapping->state.stateOfcnx = CLOSE_WAIT;
                                     SockRequestResponse requestApplicationClose;
@@ -333,10 +337,20 @@ int main(int argc, char *argv[]) {
                             }
                             break;
                         case LAST_ACK: {
-                                if(remoteAckNumber == mapping->state.last_acked + 2) {
+                            cerr << "Expecting ACK Number =" << (mapping->state.last_acked+1) << endl;
+                            cerr << "Received ACK Number = " << remoteAckNumber << endl;
+                                if(remoteAckNumber == mapping->state.last_acked + 1) {
                                     cerr << "Received final ack, connection now closed";
                                     mapping->state.stateOfcnx = CLOSED;
-                                    //REMOVE CONNECTION FROM LIKST
+
+                                    //REMOVE CONNECTION FROM LIST
+                                    ConnectionList<TCPState>::iterator temp = mapping;
+                                    temp--;
+                                    connectionList.erase(mapping);
+                                    mapping = temp;
+
+                                    cerr << "Connection Closed.";
+
                                 } else {
                                     cerr << "Received final ack with wrong number";
                                 }
@@ -348,7 +362,6 @@ int main(int argc, char *argv[]) {
                                      if(remoteAckNumber > mapping->state.last_sent) {
                                          cerr << "Received ACK AND FIN. Sending ACK. Now in state TIME_WAIT\n";
                                          mapping->state.stateOfcnx = TIME_WAIT;
-                                         //is there the possibility that the packet contains data?
                                          mapping->state.last_recvd++;
                                          sendAckNoData(mapping->connection, mapping->state.last_sent, mapping->state.last_recvd);
 
@@ -367,7 +380,6 @@ int main(int argc, char *argv[]) {
                                     if(remoteAckNumber > mapping->state.last_sent) {
                                             cerr << "Received FIN. Sending ACK. Now in state CLOSING\n";
                                             mapping->state.stateOfcnx = CLOSING;
-                                            //is there the possibility that the packet contains data?
                                             mapping->state.last_recvd++;
                                             sendAckNoData(mapping->connection, mapping->state.last_sent, mapping->state.last_recvd);
 
@@ -384,8 +396,8 @@ int main(int argc, char *argv[]) {
                                     if(remoteAckNumber > mapping->state.last_sent) {
                                          cerr << "Recieved FIN. Sending ACK. Now in state TIME_WAIT." << endl;
                                          mapping->state.stateOfcnx = TIME_WAIT;
-                                         //is there the possibility that the packet contains data?
-                                         mapping->state.last_recvd++;
+                                         mapping->state.last_recvd = remoteSequenceNumber+1;
+                                         mapping->state.last_sent = remoteAckNumber;
                                          sendAckNoData(mapping->connection, mapping->state.last_sent, mapping->state.last_recvd);
 
                                          Time newTimeout (2*MSL_TIME_SECS);
@@ -504,13 +516,15 @@ int main(int argc, char *argv[]) {
                          cerr << "Socket requests to write on port " << s.connection.srcport << "to port" << s.connection.destport << "to destination IP" <<s.connection.dest << endl;
                          cerr << "Data it wishes to send: " << s.data << endl;
                          cerr << "Data to Send \n" << "sockRequest: " << s << endl;
-
+/*
                          //test code
                         cerr << "Temp = " << s.data[0] << endl << endl;
                          if (s.data[0] == 'C') {
                             cerr << "Sock Requests to CLOSE" << endl;
                             s.type = CLOSE;
+                          //end of test code
                          } else {
+*/
 
                             ConnectionList<TCPState>::iterator matchingConnection = connectionList.FindMatchingSource(s.connection);
                             if(matchingConnection != connectionList.end()) {
@@ -554,11 +568,10 @@ int main(int argc, char *argv[]) {
                                 replyToSocket.error = EUNKNOWN;
                                 MinetSend(sock, replyToSocket);
                             }
-                            break;   //moved this up two just to test
-                         }
+
 
                         }
-
+                        break;
 
                     case CLOSE:
                         {
@@ -573,6 +586,7 @@ int main(int argc, char *argv[]) {
                             } else {
                                 if(matchingConnection->state.stateOfcnx == CLOSE_WAIT) {
                                     cerr << "Application has requested to close connection after being notified that remote host has closed its end of the connection" << endl;
+                                    matchingConnection->state.last_acked += 2;
                                     sendFin(*matchingConnection);
                                     matchingConnection->state.stateOfcnx = LAST_ACK;
 
@@ -952,15 +966,11 @@ unsigned int sendData(ConnectionToStateMapping<TCPState> & matchingConnection) {
 
         //matchingConnection.state.SendBuffer.AddBack(sockRequest.data);
 
-        //question: if the last packet had bytes 11-13, will the server ACK 11 or 13?
         matchingConnection.state.last_sent = lastSentThisSend;
         cerr << "Last sent Byte = " << lastSentThisSend << endl;
 
         cerr << "New Last acked = " << matchingConnection.state.last_acked << endl;
         cerr << "New Last sent =  " << matchingConnection.state.last_sent << endl;
-
-
-
 
         if((lastSentThisSend - lastAcked) > 0) {
             matchingConnection.timeout = Time(1.0);
